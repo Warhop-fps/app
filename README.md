@@ -110,12 +110,22 @@ npm run check
 
 머리말 검사, 맵 검사, 전체 테스트를 차례로 돌립니다. `npm run qa`는 실제 게임을 헤드리스 브라우저로 끝까지 플레이해 봅니다(Edge나 Chrome 필요, [docs/DEBUGGING.md](docs/DEBUGGING.md)).
 
+**권위 서버 시제품**(`server/`): 클라이언트는 입력만 보내고 서버가 30 Hz로 이동·사격·라운드를 판정합니다. 브라우저는 아직 붙지 않고, 가짜 클라이언트로 한 판을 끝까지 돌려 봅니다([docs/SERVER.md](docs/SERVER.md)).
+
+```bash
+npm --prefix server ci
+npm run server
+npm run server:bots -- --bots 6
+npm run test:server
+```
+
 | 문서 | 내용 |
 |---|---|
 | [docs/DESIGN.md](docs/DESIGN.md) | 모듈 사이의 약속. 무기 표, 맵 형식, 계정 API |
 | [docs/DEBUGGING.md](docs/DEBUGGING.md) | 디버그 패널(F3), 히트박스(F4), 충돌체(F6), URL 플래그 |
 | [docs/SECURITY.md](docs/SECURITY.md) | 보안·치트 대비: 무엇을 어디서 검사하는지, 남은 한계, 권위 서버로 가는 길 |
 | [server/api/README.md](server/api/README.md) | 로그인 연결·테스트 결제 API: 흐름, 구글·카카오·토스 설정, 배포, 문제 해결 |
+| [docs/SERVER.md](docs/SERVER.md) | 권위 서버 시제품: 구조, 프로토콜, 틱·되감기 설계, 클라이언트 연결 계획, 배포 계획 |
 | [docs/BALANCE.md](docs/BALANCE.md) | 무기 밸런스 수치와 근거 |
 | [docs/MAP_GUIDE.md](docs/MAP_GUIDE.md) | 맵 만드는 법 |
 | [docs/NOTICE.md](docs/NOTICE.md) | 전체 공지: 운영자 패널 사용법, 열쇠 만들기·바꾸기, 동작 원리 |

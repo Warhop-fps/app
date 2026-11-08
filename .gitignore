@@ -18,3 +18,5 @@ supabase/.env
 supabase/functions/.env
 # 운영자 열쇠(전체 공지 서명용, tools/make-notice-key.mjs) 보관 폴더. 비밀 열쇠는 저장소에 올리지 않는다
 .secrets/
+# 서버 의존성(server/package.json의 ws)은 npm --prefix server ci로 받는다. 사이트에는 npm 패키지가 없다
+node_modules/
