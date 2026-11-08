@@ -3,3 +3,5 @@ audio/emotes/*.mp3
 audio/emotes/*.wav
 audio/emotes/*.m4a
 audio/emotes/*.ogg
+# 서버 의존성(server/package.json의 ws)은 npm --prefix server ci로 받는다. 사이트에는 npm 패키지가 없다
+node_modules/
