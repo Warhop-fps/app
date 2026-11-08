@@ -3,11 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "SKALA 작전 권위 서버 시제품: Node.js WebSocket 방 서버. 게임 규칙은 저장소의 js/ 순수 모듈을 그대로 불러 쓴다",
+  "description": "SKALA 작전 권위 서버 시제품: 플랫폼을 모르는 방 로직(core/)과 VM용 Node WebSocket 어댑터(node.js, node/). 게임 규칙은 저장소의 js/ 순수 모듈을 그대로 불러 쓴다",
   "scripts": {
-    "start": "node src/main.mjs",
+    "start": "node node.js",
     "test": "node --test \"test/*.test.mjs\"",
-    "bots": "node tools/bots.mjs"
+    "bots": "node tools/bots.js"
   },
   "engines": {
     "node": ">=20"

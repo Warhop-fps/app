@@ -4,12 +4,11 @@
  * Purpose: 서버 설정. 기본값 표와, 명령줄 인자(--port 등)·환경 변수(PORT, HOST, LOG_LEVEL, ALLOWED_ORIGINS)를 읽어 검사한 설정 객체를 만든다.
  */
 import { parseArgs } from 'node:util';
-import { MAP_CHOICES } from './maps.mjs';
+import { MAP_CHOICES } from '../core/maps.js';
 
 export const DEFAULTS = Object.freeze({
   host: '0.0.0.0',
   port: 8787,
-  path: '/ws',              // WebSocket을 받는 경로. 다른 경로의 업그레이드는 404
   hz: 30,                   // 서버 틱(입력 하나 = 틱 하나)
   substeps: 2,              // 입력 하나를 나눠 돌리는 이동 횟수(1/60초씩, 브라우저 고정 틱과 같다)
   snapshotEvery: 1,         // 스냅샷 간격(틱)
@@ -25,7 +24,8 @@ export const DEFAULTS = Object.freeze({
   msgBurst: 90,             // 순간 몰림 허용
   strikeLimit: 20,          // 위반 점수가 이만큼 쌓이면 끊는다(초당 1점씩 준다)
   joinTimeoutMs: 5000,      // 접속 뒤 이 안에 join이 없으면 끊는다
-  pingIntervalMs: 5000,     // WebSocket ping 간격. 다음 ping 때까지 pong이 없으면 끊는다
+  pingIntervalMs: 5000,     // WebSocket ping 간격. ping 뒤 간격의 80%가 지나도 pong이 없으면 끊는다
+  statsIntervalMs: 60000,   // 이 간격마다 서버 한 줄 + 방마다 한 줄 통계 로그(틱 시간·초당 메시지)
   maxBufferedBytes: 262144, // 받는 쪽이 못 따라와 쌓인 보낼 데이터가 이보다 크면 끊는다
   maxRewindMs: 300,         // 지연 보정 되감기 상한
   historyTicks: 64,         // 지연 보정 기록 길이(약 2초)
@@ -33,13 +33,13 @@ export const DEFAULTS = Object.freeze({
   defaultMode: 'team',
   defaultRuleset: 'classic',
   matchRules: Object.freeze({}),   // createMatch 규칙 덮어쓰기(데모·시험의 짧은 라운드)
-  allowedOrigins: Object.freeze([]), // 비어 있으면 Origin을 보지 않는다(개발). 운영은 사이트 주소만
+  allowedOrigins: Object.freeze([]), // 비어 있으면 Origin을 보지 않는다(개발). 운영은 사이트 주소만. Origin이 없는 요청(브라우저 밖)은 통과
   trustProxy: false,        // true면 X-Forwarded-For의 첫 주소를 접속 IP로 본다(Caddy 뒤에서만 켠다)
   logLevel: 'info',
   seed: null                // 난수 시드(재현용). null이면 시각에서
 });
 
-const USAGE = `사용법: node server/src/main.mjs [옵션]
+const USAGE = `사용법: node server/node.js [옵션]   방 주소: ws://<호스트>:<포트>/room/<방 id(소문자·숫자 1~16자)>
   --port <n>            포트 (기본 ${DEFAULTS.port}, 환경 변수 PORT. 0이면 빈 포트)
   --host <addr>         받을 주소 (기본 ${DEFAULTS.host}, 환경 변수 HOST. Caddy 뒤에서는 127.0.0.1)
   --hz <n>              서버 틱 (기본 ${DEFAULTS.hz})
@@ -49,9 +49,10 @@ const USAGE = `사용법: node server/src/main.mjs [옵션]
   --map <id>            새 방의 기본 맵 (기본 ${DEFAULTS.defaultMap}: ${MAP_CHOICES.join(', ')})
   --mode <team|ffa>     새 방의 기본 모드
   --ruleset <id>        새 방의 기본 규칙 (classic, knife, sniper)
-  --origins <a,b>       허용할 Origin (환경 변수 ALLOWED_ORIGINS). 비우면 검사하지 않음
+  --origins <a,b>       허용할 Origin (환경 변수 ALLOWED_ORIGINS). 비우면 검사하지 않음, Origin이 없는 요청은 통과
   --trust-proxy         X-Forwarded-For를 믿는다 (프록시 뒤에서만)
   --log-level <lv>      trace, debug, info, warn, error, silent (환경 변수 LOG_LEVEL)
+  --stats-sec <n>       통계 로그(서버 한 줄 + 방마다 한 줄) 간격 (기본 ${DEFAULTS.statsIntervalMs / 1000})
   --round-sec <n>       라운드 길이(초)      --loadout-sec <n>  무기 선택 시간(초)
   --round-end-sec <n>   라운드 결과 시간(초) --rounds-to-win <n> 선승 수
   --seed <n>            난수 시드`;
@@ -83,7 +84,7 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env) {
       map: { type: 'string' }, mode: { type: 'string' }, ruleset: { type: 'string' },
       origins: { type: 'string' }, 'trust-proxy': { type: 'boolean' }, 'log-level': { type: 'string' },
       'round-sec': { type: 'string' }, 'loadout-sec': { type: 'string' }, 'round-end-sec': { type: 'string' },
-      'rounds-to-win': { type: 'string' }, seed: { type: 'string' }, help: { type: 'boolean', short: 'h' }
+      'rounds-to-win': { type: 'string' }, seed: { type: 'string' }, 'stats-sec': { type: 'string' }, help: { type: 'boolean', short: 'h' }
     }
   });
   const c = { ...DEFAULTS, matchRules: { ...DEFAULTS.matchRules } };
@@ -120,5 +121,6 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env) {
     c.matchRules.maxRounds = n * 2 - 1;
   }
   if (values.seed !== undefined) c.seed = int('--seed', values.seed, 0, 0xffffffff);
+  if (values['stats-sec'] !== undefined) c.statsIntervalMs = seconds('--stats-sec', values['stats-sec'], 1, 3600);
   return { config: c, help: !!values.help };
 }

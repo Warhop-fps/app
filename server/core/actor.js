@@ -9,10 +9,10 @@
  * 그래서 점프 높이·버니합·마찰이 브라우저에서 튜닝한 값과 똑같이 나온다(movement.js 수치는 60 Hz 기준).
  *
  * 입력 줄 규칙
- *   - 틱마다 정확히 한 걸음. 줄이 비면 마지막 입력의 누르고 있는 키를 한 틱 더 쓴다(새로 누름 b·무기 칸 w는 되풀이하지 않는다).
- *   - 줄이 INPUT_QUEUE_MAX보다 길어지면 가장 오래된 입력의 이동은 버리고 새로 누름(b)과 무기 칸(w)만 다음 입력에 합친다.
+ *   - 틱마다 정확히 한 걸음. 줄이 비면 마지막 입력의 누르고 있는 키를 한 틱 더 쓴다(새로 누름 press·무기 칸 slot은 되풀이하지 않는다).
+ *   - 줄이 INPUT_QUEUE_MAX보다 길어지면 가장 오래된 입력의 이동은 버리고 새로 누름(press)과 무기 칸(slot)만 다음 입력에 합친다.
  *     밀린 입력을 한 틱에 여러 개 처리하지 않으므로 시간을 앞당겨 빨리 달리는 조작이 통하지 않는다.
- *   - 번호(s)가 이미 받은 것보다 크지 않으면 버린다(중복·순서 조작).
+ *   - 번호(seq)가 이미 받은 것보다 크지 않으면 버린다(중복·순서 조작).
  */
 import { createBus } from '../../js/core/bus.js';
 import { PLAYER } from '../../js/core/consts.js';
@@ -21,7 +21,7 @@ import { createLocalPlayer } from '../../js/engine/player.js';
 import { createArsenal } from '../../js/weapons/logic.js';
 import { DEFAULT_LOADOUT } from '../../js/weapons/defs.js';
 import { rulesetOf } from '../../js/game/modes.js';
-import { FLAG, KEY, PRESS, encodeRow } from './protocol.mjs';
+import { FLAG, KEY, PRESS, encodeRow } from './protocol.js';
 
 /** 쌓아 두는 입력 상한(약 133 ms). 지연이 튀어 한꺼번에 온 입력을 이만큼은 그대로 처리한다 */
 export const INPUT_QUEUE_MAX = 4;
@@ -62,7 +62,7 @@ export function createActor({ id, name, team, world, ruleset, rng = Math.random,
   const queue = [];
   let lastSeq = -1;     // 받은 입력 중 가장 큰 번호
   let ack = -1;         // 처리한 마지막 입력 번호
-  let last = { t: 'in', s: -1, k: 0, y: 0, p: 0, w: 0, b: 0, vt: null };
+  let last = { t: 'input', seq: -1, keys: 0, press: 0, yaw: 0, pitch: 0, slot: 0, viewTick: null };
   let prevKeys = 0;
   let spawned = false;
   let dead = false;     // 경기가 죽였다. 다음 스폰까지는 무엇도 살리지 못한다
@@ -74,14 +74,14 @@ export function createActor({ id, name, team, world, ruleset, rng = Math.random,
 
   /** 입력 하나를 줄에 넣는다. 번호가 늘지 않았으면 false */
   function enqueue(msg) {
-    if (msg.s <= lastSeq) { stats.stale++; return false; }
-    lastSeq = msg.s;
+    if (msg.seq <= lastSeq) { stats.stale++; return false; }
+    lastSeq = msg.seq;
     queue.push(msg);
     while (queue.length > INPUT_QUEUE_MAX) {
       const old = queue.shift();
       const next = queue[0];
-      next.b |= old.b;                       // 새로 누른 키(점프·사격·재장전)는 잃지 않는다
-      if (!next.w && old.w) next.w = old.w;
+      next.press |= old.press;               // 새로 누른 키(점프·사격·재장전)는 잃지 않는다
+      if (!next.slot && old.slot) next.slot = old.slot;
       stats.folded++;
     }
     return true;
@@ -89,15 +89,15 @@ export function createActor({ id, name, team, world, ruleset, rng = Math.random,
 
   /** 이번 걸음의 무기 입력(world.js tick과 같은 모양). 새로 누름은 첫 걸음에만 넣는다 */
   function weaponInput(inp, first) {
-    const fireDown = !!(inp.k & KEY.FIRE);
+    const fireDown = !!(inp.keys & KEY.FIRE);
     return {
       fireDown,
-      firePressed: first && (!!(inp.b & PRESS.FIRE) || (fireDown && !(prevKeys & KEY.FIRE))),
-      zoomDown: !!(inp.k & KEY.AIM),
-      zoomToggle: first && !!(inp.b & PRESS.AIM),
-      reloadPressed: first && !!(inp.b & PRESS.RELOAD),
-      slot: first && inp.w ? inp.w : null,
-      wheel: first ? (inp.b & PRESS.NEXT ? 1 : inp.b & PRESS.PREV ? -1 : 0) : 0
+      firePressed: first && (!!(inp.press & PRESS.FIRE) || (fireDown && !(prevKeys & KEY.FIRE))),
+      zoomDown: !!(inp.keys & KEY.AIM),
+      zoomToggle: first && !!(inp.press & PRESS.AIM),
+      reloadPressed: first && !!(inp.press & PRESS.RELOAD),
+      slot: first && inp.slot ? inp.slot : null,
+      wheel: first ? (inp.press & PRESS.NEXT ? 1 : inp.press & PRESS.PREV ? -1 : 0) : 0
     };
   }
 
@@ -110,17 +110,17 @@ export function createActor({ id, name, team, world, ruleset, rng = Math.random,
     let inp;
     if (queue.length) {
       inp = queue.shift();
-      ack = inp.s;
+      ack = inp.seq;
       stats.inputs++;
-      state.yaw = inp.y;
-      state.pitch = inp.p;
+      state.yaw = inp.yaw;
+      state.pitch = inp.pitch;
     } else {
       // 입력이 늦었다: 누르고 있던 키를 한 틱 더 누른 것으로 본다. 시점은 지금 그대로 둔다(스폰 방향을 옛 입력이 덮지 않게)
-      inp = { ...last, y: state.yaw, p: state.pitch, b: 0, w: 0 };
+      inp = { ...last, yaw: state.yaw, pitch: state.pitch, press: 0, slot: 0 };
       stats.repeated++;
     }
     last = inp;
-    const k = inp.k;
+    const k = inp.keys;
     keys.forward = !!(k & KEY.FORWARD);
     keys.back = !!(k & KEY.BACK);
     keys.left = !!(k & KEY.LEFT);
@@ -129,7 +129,7 @@ export function createActor({ id, name, team, world, ruleset, rng = Math.random,
     keys.crouch = !!(k & KEY.CROUCH);
     keys.walk = !!(k & KEY.WALK);
     keys.aim = !!(k & KEY.AIM);
-    if (inp.b & PRESS.JUMP) bus.emit('input:jump');   // 브라우저의 keydown과 같다(0.12초 점프 버퍼)
+    if (inp.press & PRESS.JUMP) bus.emit('input:jump');   // 브라우저의 keydown과 같다(0.12초 점프 버퍼)
     const canMove = !!ctx.canMove && spawned;
     for (let i = 0; i < substeps; i++) {
       player.setFrozen(!canMove);
@@ -189,7 +189,7 @@ export function createActor({ id, name, team, world, ruleset, rng = Math.random,
     return encodeRow({ id, pos: state.pos, yaw: state.yaw, pitch: state.pitch, flags, hp: state.hp, weapon: spawned ? w.id : '', ack });
   }
 
-  /** 받는 사람 자신에게만 보내는 상태. 다음 단계의 클라이언트 예측·보정이 쓴다(docs/SERVER.md 6절) */
+  /** 받는 사람 자신에게만 보내는 상태. 다음 단계의 클라이언트 예측·보정이 쓴다(docs/SERVER.md 8절) */
   function me() {
     const a = arsenal.getAmmo();
     const mm = state.moveMem || {};

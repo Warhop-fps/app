@@ -1,15 +1,18 @@
 /*
  * Date: 06NOV2026
  * Author: Minkyu Jung
- * Purpose: 권위 서버의 방 하나. 경기 규칙(createMatch)·물리 월드·사람(actor)·수류탄을 들고 고정 틱(기본 30 Hz)으로 돈다.
- *          틱마다 입력을 하나씩 처리하고, 사격은 쏜 사람이 본 틱으로 되감아 판정한 뒤 스냅샷·이벤트를 보낸다. 소켓을 모르는 객체라 node 테스트에서 직접 돌린다.
+ * Purpose: 방 하나의 규칙(권위 서버의 공통 방 로직). 접속·입력·틱만 받고 보낼 메시지는 send로 넘긴다. 네트워크와 타이머는 어댑터(VM의 Node 서버, Durable Objects)가 맡는다.
+ *          경기 규칙(createMatch)·물리 월드·사람(actor)·수류탄을 들고 틱마다 입력을 하나씩 처리하며, 사격은 쏜 사람이 본 틱으로 되감아 판정한다.
  */
 /**
- *   const room = createRoom({ id: 'abc', map: 'arena', mode: 'team', ruleset: 'classic' });
- *   const r = room.join({ name, team, peer });   // peer = { send(text), rtt?() } → { ok, id } | { ok:false, code }
- *   room.handle(r.id, msg);                      // protocol.decodeClient로 검사한 in·pick·team·start
- *   room.step();                                 // 틱 하나(서버 루프가 1/hz초마다 부른다)
- *   room.leave(r.id);
+ *   const room = createRoom({ send: (playerId, text) => socketOf(playerId).send(text), id: 'abc', map: 'arena' });
+ *   room.join(playerId, { name, team });   // 신원(playerId)은 어댑터가 정한다 → { ok, team } | { ok:false, code }
+ *   room.input(playerId, msg);             // protocol.decodeClient로 검사한 input·pick·team·start
+ *   room.tick();                           // 틱 하나(어댑터가 1/hz초마다 부른다). 틱 길이는 만들 때 hz로 정해진다
+ *   room.leave(playerId);
+ *   room.size                              // 사람 수
+ *
+ * send(playerId, text)의 text는 이미 JSON 글자다. 모두에게 같은 스냅샷 앞부분을 틱마다 한 번만 직렬화하려고 방이 직접 만든다.
  *
  * 틱 순서
  *   1. 사람마다 입력 하나 → 이동·무기(사격은 그 자리에서 되감아 판정해 match.claimHit). 처리 순서는 틱마다 한 칸씩 돈다
@@ -24,18 +27,20 @@ import { createMatch } from '../../js/game/match.js';
 import { normalizeRuleset, shotTargets } from '../../js/game/modes.js';
 import { getDef } from '../../js/weapons/defs.js';
 import { createGrenadeSystem } from '../../js/weapons/grenade.js';
-import { createActor } from './actor.mjs';
-import { meleeTrace, resolveShot } from './combat.mjs';
-import { createHistory, rewindTarget } from './lagcomp.mjs';
-import { loadMap } from './maps.mjs';
-import { PROTOCOL, ROW } from './protocol.mjs';
+import { createActor } from './actor.js';
+import { meleeTrace, resolveShot } from './combat.js';
+import { createHistory, rewindTarget } from './lagcomp.js';
+import { loadMap } from './maps.js';
+import { PROTOCOL, ROW } from './protocol.js';
 
 const round2 = (v) => Math.round(v * 100) / 100;
 const r2 = (v) => [round2(v[0]), round2(v[1]), round2(v[2])];
 
 /**
  * @param {object} o
- * @param {string} o.id 방 id
+ * @param {(playerId:string, text:string) => void} o.send 보낼 메시지(JSON 글자)
+ * @param {(playerId:string) => number|null} [o.rttOf] 그 사람의 왕복 지연(ms). 점수판의 핑
+ * @param {string} [o.id='room'] 방 id
  * @param {string} [o.map='arena'] maps.MAP_CHOICES 중 하나
  * @param {'team'|'ffa'} [o.mode='team']
  * @param {string} [o.ruleset='classic']
@@ -48,15 +53,16 @@ const r2 = (v) => [round2(v[0]), round2(v[1]), round2(v[2])];
  * @param {number} [o.matchEvery=15] 점수판 간격(틱)
  * @param {object} [o.rules] createMatch 규칙 덮어쓰기(시험·데모의 짧은 라운드 등)
  * @param {() => number} [o.rng] 탄퍼짐·스폰 섞기 난수
- * @param {object} [o.log] log.mjs 로거
+ * @param {object} [o.log] 로거(log.info·debug)
  * @param {() => void} [o.onEmpty] 마지막 사람이 나갔을 때
  */
 export function createRoom(o) {
   const {
-    id, map = 'arena', mode = 'team', ruleset = 'classic', hz = 30, substeps = 2, roomSize = 6,
+    send, rttOf = null, id = 'room', map = 'arena', mode = 'team', ruleset = 'classic', hz = 30, substeps = 2, roomSize = 6,
     maxRewindMs = 300, historyTicks = 64, snapshotEvery = 1, matchEvery = 15, rules = {},
     rng = Math.random, log = null, onEmpty = null
   } = o;
+  if (typeof send !== 'function') throw new TypeError('createRoom: send(playerId, text)가 필요하다');
   const built = loadMap(map);
   if (!built) throw new Error(`unknown map: ${map}`);
   const rs = normalizeRuleset(ruleset);
@@ -68,14 +74,12 @@ export function createRoom(o) {
   const ffaSpots = [...built.spawns.owner, ...built.spawns.charterer, ...(built.spawns.ffa || [])];
 
   const actors = new Map();   // 입장 순서
-  const peers = new Map();
   const history = createHistory({ size: historyTicks });
   const nades = createGrenadeSystem({ world: built.world });
   const counters = { shots: 0, hits: 0, rewinds: 0, rewindTicks: 0, clamped: 0, explosions: 0 };
   let match = newMatch();
   let phase = 'warmup';
-  let tick = 0;
-  let seq = 0;
+  let tickNo = 0;
   let nadeSeq = 0;
   let leader = null;
   let outEvents = [];
@@ -94,48 +98,44 @@ export function createRoom(o) {
 
   // ── 보내기 ────────────────────────────────────────────
   function broadcast(text) {
-    for (const peer of peers.values()) peer.send(text);
+    for (const pid of actors.keys()) send(pid, text);
   }
   function direct(pid, ev) {
-    if (!peers.has(pid)) return;
+    if (!actors.has(pid)) return;
     const list = directOut.get(pid) || [];
     list.push(ev);
     directOut.set(pid, list);
   }
   function welcome(pid, team) {
-    return JSON.stringify({ t: 'welcome', v: PROTOCOL, id: pid, team, room: id, hz, tick, map: built.id, mode, ruleset: rs, leader, maxRewindMs, row: ROW });
+    return JSON.stringify({
+      t: 'welcome', v: PROTOCOL, playerId: pid, team, room: id, hz, tick: tickNo, map: built.id, mode, ruleset: rs, leader, maxRewindMs, row: ROW
+    });
   }
   function sendSnapshots() {
-    if (!peers.size) return;
+    if (!actors.size) return;
     const rows = [];
     for (const a of actors.values()) rows.push(a.row());
     // 모두에게 같은 앞부분은 한 번만 직렬화하고, 받는 사람만의 me만 덧붙인다
-    const head = `{"t":"s","k":${tick},"p":${JSON.stringify(rows)},"me":`;
-    for (const [pid, peer] of peers) {
-      const a = actors.get(pid);
-      if (a) peer.send(head + JSON.stringify(a.me()) + '}');
-    }
+    const head = `{"t":"snap","tick":${tickNo},"players":${JSON.stringify(rows)},"me":`;
+    for (const [pid, a] of actors) send(pid, head + JSON.stringify(a.me()) + '}');
   }
   function flush() {
     if (outEvents.length) {
-      broadcast(JSON.stringify({ t: 'e', k: tick, e: outEvents }));
+      broadcast(JSON.stringify({ t: 'events', tick: tickNo, events: outEvents }));
       outEvents = [];
     }
-    for (const [pid, list] of directOut) {
-      const peer = peers.get(pid);
-      if (peer) peer.send(JSON.stringify({ t: 'e', k: tick, e: list }));
-    }
+    for (const [pid, list] of directOut) if (actors.has(pid)) send(pid, JSON.stringify({ t: 'events', tick: tickNo, events: list }));
     directOut.clear();
   }
   function sendMatch() {
     matchDirty = false;
-    if (!peers.size) return;
+    if (!actors.size) return;
     const ping = {};
-    for (const [pid, peer] of peers) {
-      const v = typeof peer.rtt === 'function' ? peer.rtt() : null;
+    for (const pid of actors.keys()) {
+      const v = rttOf ? rttOf(pid) : null;
       ping[pid] = Number.isFinite(v) ? Math.round(v) : null;
     }
-    broadcast(JSON.stringify({ t: 'm', k: tick, m: match.snapshot(), leader, ping }));
+    broadcast(JSON.stringify({ t: 'match', tick: tickNo, match: match.snapshot(), leader, ping }));
   }
 
   // ── 경기 이벤트 적용 ──────────────────────────────────
@@ -203,13 +203,13 @@ export function createRoom(o) {
 
   // ── 판정 ──────────────────────────────────────────────
   /**
-   * 쏜 사람 a가 vt 틱에 본 다른 사람들의 자리. 지금도 살아 있어야 대상이 된다(그 사이에 죽었으면 맞힐 수 없다).
+   * 쏜 사람 a가 viewTick에 본 다른 사람들의 자리. 지금도 살아 있어야 대상이 된다(그 사이에 죽었으면 맞힐 수 없다).
    * 팀전에서는 아군을 뺀다(총알이 아군 몸을 통과한다, modes.shotTargets).
    */
-  function rewound(a, vt) {
+  function rewound(a, viewTick) {
     const range = history.range();
     if (!range) return { list: [], rewind: 0 };
-    const rt = rewindTarget(vt, { now: tick, maxTicks: maxRewindTicks, oldest: range.oldest, newest: range.newest });
+    const rt = rewindTarget(viewTick, { now: tickNo, maxTicks: maxRewindTicks, oldest: range.oldest, newest: range.newest });
     counters.rewinds++;
     counters.rewindTicks += rt.rewind;
     if (rt.clamped) counters.clamped++;
@@ -224,7 +224,7 @@ export function createRoom(o) {
   }
 
   function fire(a, ev, inp) {
-    const { list, rewind } = rewound(a, inp.vt);
+    const { list, rewind } = rewound(a, inp.viewTick);
     const def = getDef(ev.weaponId);
     const range = Number.isFinite(ev.maxRange) ? ev.maxRange : def ? def.maxRange : 300;
     const eye = a.eye();
@@ -242,7 +242,7 @@ export function createRoom(o) {
   }
 
   function melee(a, ev, inp) {
-    const { list } = rewound(a, inp.vt);
+    const { list } = rewound(a, inp.viewTick);
     const hit = meleeTrace(built.world, a.eye(), a.aimDir(), ev.range, ev.arc, list, a.id);
     if (!hit) return;
     absorb(match.claimHit({
@@ -284,28 +284,28 @@ export function createRoom(o) {
   }
 
   // ── 공개 API ──────────────────────────────────────────
-  function join({ name, team = null, peer = null } = {}) {
+  /** 들어온다. playerId는 어댑터가 정한 신원이다(클라이언트가 고르지 않는다) */
+  function join(pid, { name, team = null } = {}) {
     if (disposed) return { ok: false, code: 'room_closed' };
+    if (typeof pid !== 'string' || !pid) return { ok: false, code: 'bad_id' };
+    if (actors.has(pid)) return { ok: false, code: 'duplicate_id' };
     if (actors.size >= roomSize) return { ok: false, code: 'room_full' };
-    const pid = `p${++seq}`;
     const evs = match.addPlayer({ id: pid, name, team });
     const first = evs[0];
     if (!first || first.type === 'reject') return { ok: false, code: (first && first.reason) || 'join_failed' };
     const actor = createActor({ id: pid, name: first.name, team: first.team, world: built.world, ruleset: rs, rng, substeps, tickDt, hp: match.rules.hp });
     actors.set(pid, actor);
-    if (peer) peers.set(pid, peer);
     if (!leader) leader = pid;
-    if (peer) peer.send(welcome(pid, first.team));
+    send(pid, welcome(pid, first.team));
     absorb(evs);
     if (log) log.info({ room: id, player: pid, name: first.name, team: first.team, players: actors.size }, 'player joined');
-    return { ok: true, id: pid, team: first.team };
+    return { ok: true, team: first.team };
   }
 
   function leave(pid, reason = 'left') {
     const a = actors.get(pid);
     if (!a) return false;
     actors.delete(pid);
-    peers.delete(pid);
     directOut.delete(pid);
     a.dispose();
     absorb(match.removePlayer(pid));
@@ -327,12 +327,13 @@ export function createRoom(o) {
     for (const a of actors.values()) absorb(match.addPlayer({ id: a.id, name: a.name, team: a.team }));
   }
 
-  function handle(pid, msg) {
+  /** 검사를 통과한 클라이언트 메시지(protocol.decodeClient의 input·pick·team·start) */
+  function input(pid, msg) {
     const a = actors.get(pid);
     if (!a || !msg) return;
     switch (msg.t) {
-      case 'in': a.enqueue(msg); break;
-      case 'pick': absorb(match.setLoadout(pid, msg.w), pid); break;
+      case 'input': a.enqueue(msg); break;
+      case 'pick': absorb(match.setLoadout(pid, msg.weapon), pid); break;
       case 'team': absorb(match.setTeam(pid, msg.team), pid); break;
       case 'start':
         if (pid !== leader) { direct(pid, { type: 'reject', action: 'start', reason: 'not_leader', by: pid }); break; }
@@ -343,23 +344,24 @@ export function createRoom(o) {
     }
   }
 
-  function step() {
+  /** 틱 하나. 길이는 만들 때 정한 1/hz초로 고정이다(입력 하나 = 틱 하나라서 틱 길이가 바뀌면 이동이 달라진다) */
+  function tick() {
     if (disposed) return;
-    tick += 1;
+    tickNo += 1;
     const list = [...actors.values()];
     const n = list.length;
     // 처리 순서를 틱마다 한 칸씩 돌린다: 같은 틱에 서로 쏜 두 사람 중 늘 같은 사람이 먼저 맞히지 않게
     const canMove = phase !== 'loadout' && phase !== 'matchEnd';
     for (let i = 0; i < n; i++) {
-      const a = list[(i + tick) % n];
+      const a = list[(i + tickNo) % n];
       a.step({ canMove, onWeaponEvent: (ev, inp) => onWeapon(a, ev, inp) });
     }
     for (const ge of nades.update(tickDt)) if (ge.type === 'explode') explode(ge);
     absorb(match.tick(tickMs));
-    history.record(tick, list.map((a) => a.target()));
-    if (tick % snapshotEvery === 0) sendSnapshots();
+    history.record(tickNo, list.map((a) => a.target()));
+    if (tickNo % snapshotEvery === 0) sendSnapshots();
     flush();
-    if (matchDirty || tick % matchEvery === 0) sendMatch();
+    if (matchDirty || tickNo % matchEvery === 0) sendMatch();
   }
 
   function dispose() {
@@ -367,7 +369,6 @@ export function createRoom(o) {
     disposed = true;
     for (const a of actors.values()) a.dispose();
     actors.clear();
-    peers.clear();
     match.dispose();
     nades.dispose();
   }
@@ -379,23 +380,23 @@ export function createRoom(o) {
     ruleset: rs,
     join,
     leave,
-    handle,
-    step,
+    input,
+    tick,
     dispose,
-    get tick() { return tick; },
-    get phase() { return phase; },
     get size() { return actors.size; },
+    get currentTick() { return tickNo; },
+    get phase() { return phase; },
     get leader() { return leader; },
     get match() { return match; },
     get world() { return built.world; },
     get maxRewindTicks() { return maxRewindTicks; },
     /** 시험·진단용 */
     actor: (pid) => actors.get(pid) || null,
-    actorIds: () => [...actors.keys()],
+    playerIds: () => [...actors.keys()],
     history,
     stats() {
       return {
-        id, map: built.id, mode, ruleset: rs, tick, phase, players: actors.size, ...counters,
+        id, map: built.id, mode, ruleset: rs, tick: tickNo, phase, players: actors.size, ...counters,
         avgRewindMs: counters.rewinds ? round2((counters.rewindTicks / counters.rewinds) * tickMs) : 0
       };
     }

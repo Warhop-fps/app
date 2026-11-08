@@ -6,7 +6,7 @@
  */
 /**
  * meleeTrace는 js/game/world.js의 같은 이름 함수를 그대로 옮긴 것이다. world.js가 three.js를 불러 node에서 import할 수 없어서다.
- * 칼 규칙을 바꿀 때는 두 곳을 함께 고친다. 다음 단계에서 순수 모듈로 빼 브라우저와 서버가 한 파일을 쓰게 한다(docs/SERVER.md 7절).
+ * 칼 규칙을 바꿀 때는 두 곳을 함께 고친다. 다음 단계에서 순수 모듈로 빼 브라우저와 서버가 한 파일을 쓰게 한다(docs/SERVER.md 8절).
  */
 import { traceShot, raycastPlayers, lineOfSight } from '../../js/engine/physics.js';
 import { shotDirection } from '../../js/weapons/logic.js';
@@ -23,6 +23,12 @@ const r3 = (v) => [Math.round(v[0] * 1000) / 1000, Math.round(v[1] * 1000) / 100
 function norm3(v) {
   const l = Math.hypot(v[0], v[1], v[2]) || 1;
   return [v[0] / l, v[1] / l, v[2] / l];
+}
+
+/** 눈 → 점을 보는 yaw·pitch와 수평 거리(yaw 0 = -Z, 전방 = (-sin yaw, -cos yaw), consts.js 좌표 규약). 가짜 클라이언트와 시험이 겨눌 때 쓴다 */
+export function aimAt(eye, point) {
+  const dx = point[0] - eye[0], dy = point[1] - eye[1], dz = point[2] - eye[2];
+  return { yaw: Math.atan2(-dx, -dz), pitch: Math.atan2(dy, Math.hypot(dx, dz)), dist: Math.hypot(dx, dz) };
 }
 
 /**

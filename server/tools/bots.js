@@ -7,14 +7,15 @@
 /**
  *   npm run server                                    # 다른 창에서 서버
  *   npm run server:bots -- --bots 6 --latency 40      # 3:3, 한쪽 지연 40 ms
- *   node server/tools/bots.mjs --url ws://127.0.0.1:8787/ws --room demo --bots 4 --timeout 180
+ *   node server/tools/bots.js --url ws://127.0.0.1:8787 --room demo --bots 4 --timeout 180
  */
 import { parseArgs } from 'node:util';
-import { createFakeClient } from './fake-client.mjs';
+import { ROOM_ID_RE } from '../core/protocol.js';
+import { createFakeClient } from './fake-client.js';
 
-const USAGE = `사용법: node server/tools/bots.mjs [옵션]
-  --url <ws://…/ws>   서버 주소 (기본 ws://127.0.0.1:8787/ws)
-  --room <id>         방 이름 (기본 bots-<시각>)
+const USAGE = `사용법: node server/tools/bots.js [옵션]
+  --url <ws://…>      서버 주소 (기본 ws://127.0.0.1:8787, 방 주소는 <url>/room/<방>)
+  --room <id>         방 id, 소문자·숫자 1~16자 (기본 bots<시각>)
   --bots <n>          가짜 클라이언트 수 2~6 (기본 4)
   --latency <ms>      한쪽 지연 (기본 30)     --jitter <ms>  지연 흔들림 (기본 10)
   --map <id>          방을 만들 때 맵 (기본 서버 설정, 가짜 클라이언트는 가림막 없는 arena를 전제로 겨눈다)
@@ -27,7 +28,7 @@ function fail(msg) {
 
 const { values } = parseArgs({
   options: {
-    url: { type: 'string', default: 'ws://127.0.0.1:8787/ws' },
+    url: { type: 'string', default: 'ws://127.0.0.1:8787' },
     room: { type: 'string' },
     bots: { type: 'string', default: '4' },
     latency: { type: 'string', default: '30' },
@@ -41,7 +42,8 @@ if (values.help) { console.log(USAGE); process.exit(0); }
 const count = Number(values.bots);
 if (!Number.isInteger(count) || count < 2 || count > 6) fail(`--bots: 2~6 (받은 값 ${values.bots})\n\n${USAGE}`);
 const latencyMs = Number(values.latency), jitterMs = Number(values.jitter), timeoutMs = Number(values.timeout) * 1000;
-const room = values.room || `bots-${Date.now().toString(36)}`;
+const room = values.room || `bots${Date.now().toString(36)}`;
+if (!ROOM_ID_RE.test(room)) fail(`--room: 소문자·숫자 1~16자 (받은 값 ${room})`);
 const opts = values.map ? { map: values.map } : undefined;
 
 const clients = [];

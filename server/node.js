@@ -1,10 +1,11 @@
 /*
  * Date: 06NOV2026
  * Author: Minkyu Jung
- * Purpose: 권위 서버 실행 진입점(npm run server). 설정을 읽어 서버를 띄우고, SIGINT·SIGTERM에 접속을 정리하고 끝낸다. 의존성이 없으면 설치 방법을 알려 준다.
+ * Purpose: VM용 실행 진입점(npm run server, Docker의 node node.js). 설정을 읽어 Node 어댑터(node/server.js)를 띄우고, SIGINT·SIGTERM에 접속을 정리하고 끝낸다.
+ *          방 규칙은 core/room.js에 있고 이 파일과 node/는 그 위에 얹은 어댑터다. 의존성(ws)이 없으면 설치 방법을 알려 준다.
  */
-import { loadConfig, USAGE } from './config.mjs';
-import { createLogger } from './log.mjs';
+import { loadConfig, USAGE } from './node/config.js';
+import { createLogger } from './node/log.js';
 
 let parsed;
 try {
@@ -22,7 +23,7 @@ const log = createLogger({ level: config.logLevel, base: { service: 'skala-serve
 
 let startServer;
 try {
-  ({ startServer } = await import('./server.mjs'));
+  ({ startServer } = await import('./node/server.js'));
 } catch (err) {
   if (err && err.code === 'ERR_MODULE_NOT_FOUND' && /'ws'/.test(String(err.message))) {
     console.error('서버 의존성(ws)이 없습니다. 저장소 루트에서 먼저 실행하세요:\n  npm --prefix server ci');
