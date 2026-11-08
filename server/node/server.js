@@ -1,33 +1,34 @@
 /*
  * Date: 06NOV2026
  * Author: Minkyu Jung
- * Purpose: 권위 서버의 네트워크 앞단. HTTP(/healthz·/metrics)와 WebSocket 업그레이드를 받고, 접속마다 크기·속도 제한과 위반 점수를 적용해
- *          검사를 통과한 메시지만 방으로 넘긴다. 모든 방을 고정 틱 루프 하나로 돌리고, 한 방의 오류가 서버 전체를 멈추지 않게 가둔다.
+ * Purpose: VM용 Node 어댑터. HTTP(/healthz·/metrics)와 WebSocket(/room/<id>)을 받고, 접속마다 크기·속도 제한과 위반 점수를 적용해
+ *          검사를 통과한 메시지만 방(core/room.js)으로 넘긴다. 모든 방을 고정 틱 루프 하나로 돌리고, 방별 틱 시간·초당 메시지를 로그와 지표로 낸다.
  */
 /**
- *   const server = await startServer({ port: 8787 });   // DEFAULTS(config.mjs) 위에 덮어쓴다
- *   server.url        // ws://127.0.0.1:8787/ws
+ *   const server = await startServer({ port: 8787 });   // config.DEFAULTS 위에 덮어쓴다
+ *   server.url              // ws://127.0.0.1:8787   (방 주소는 server.roomUrl('abc') = ws://127.0.0.1:8787/room/abc)
  *   await server.close();
  *
  * 접속 하나의 길
- *   업그레이드: 경로(/ws) → Origin(설정했을 때) → 전체 접속 수 → IP당 접속 수 → WebSocket
+ *   업그레이드: 경로 /room/<id> → Origin(설정했을 때, 값이 없는 브라우저 밖 클라이언트는 통과) → 전체 접속 수 → IP당 접속 수 → WebSocket
  *   메시지: 바이너리 거절 → 크기(maxMessageBytes) → 속도(토큰 버킷) → 형식 검사(protocol.decodeClient) → join 또는 방으로
  *   위반(깨진 JSON, 큰 메시지, 과속, 모르는 형식)은 점수로 쌓이고 strikeLimit을 넘으면 1008로 끊는다.
- *   join 없이 joinTimeoutMs가 지나면, ping에 다음 ping까지 답이 없으면, 보낼 데이터가 maxBufferedBytes보다 쌓이면 끊는다.
+ *   join 없이 joinTimeoutMs가 지나면, ping에 기한 안에 답이 없으면, 보낼 데이터가 maxBufferedBytes보다 쌓이면 끊는다.
+ * 신원(playerId)은 이 어댑터가 정한다. 클라이언트가 보낸 id는 어디에도 쓰지 않는다.
  * 로그에는 IP 원문 대신 프로세스마다 다른 소금을 친 해시 앞자리만 남긴다(docs/SECURITY.md 1절과 같은 원칙).
  */
 import { createHash, randomBytes, randomInt } from 'node:crypto';
 import http from 'node:http';
 import { WebSocket, WebSocketServer } from 'ws';
 import { RULESET_IDS } from '../../js/game/modes.js';
-import { DEFAULTS } from './config.mjs';
-import { TokenBucket, createStrikes } from './limits.mjs';
-import { createLogger } from './log.mjs';
-import { createLoop } from './loop.mjs';
-import { MAP_CHOICES } from './maps.mjs';
-import { createMetrics } from './metrics.mjs';
-import { CLOSE, PROTOCOL, decodeClient, encodeError } from './protocol.mjs';
-import { createRoom } from './room.mjs';
+import { TokenBucket, createStrikes } from '../core/limits.js';
+import { MAP_CHOICES } from '../core/maps.js';
+import { CLOSE, PROTOCOL, decodeClient, encodeError, roomIdFromPath } from '../core/protocol.js';
+import { createRoom } from '../core/room.js';
+import { DEFAULTS } from './config.js';
+import { createLogger } from './log.js';
+import { createLoop } from './loop.js';
+import { createMetrics } from './metrics.js';
 
 export const SERVER_VERSION = '0.1.0';
 
@@ -41,9 +42,13 @@ function mulberry32(seed) {
   };
 }
 
+const round1 = (v) => Math.round(v * 10) / 10;
+const round3 = (v) => Math.round(v * 1000) / 1000;
+const emptyWindow = () => ({ msgIn: 0, msgOut: 0, bytesOut: 0, tickMs: 0, tickMax: 0, ticks: 0 });
+
 /**
  * @param {object} [options] config.DEFAULTS의 키 + { log }(로거를 직접 줄 때)
- * @returns {Promise<{url:string, port:number, close:() => Promise<void>, stats:() => object, metrics:object, rooms:Map}>}
+ * @returns {Promise<{url:string, roomUrl:(id:string) => string, httpUrl:string, port:number, close:() => Promise<void>, stats:() => object, metrics:object, rooms:Map}>}
  */
 export async function startServer(options = {}) {
   const cfg = { ...DEFAULTS, ...options };
@@ -52,15 +57,25 @@ export async function startServer(options = {}) {
   const ipSalt = randomBytes(16);
   const rooms = new Map();
   const conns = new Set();
+  const byPlayer = new Map();    // playerId → 접속
   const perIp = new Map();
+  const roomsByIp = new Map();   // 만든 사람 IP → 그 IP가 만든 열린 방 수
   const startedAt = Date.now();
   let connSeq = 0;
+  let playerSeq = 0;
   let closing = false;
+  // 통계 창: statsIntervalMs마다 로그 한 줄씩(서버 전체 + 방마다) 내고 비운다
+  let win = { ...emptyWindow(), start: performance.now() };
+  let roomWin = new Map();
+  let lastWindow = null;
 
   const metrics = createMetrics();
   metrics.declare('skala_connections', 'gauge', '열린 WebSocket 접속 수');
   metrics.declare('skala_rooms', 'gauge', '열린 방 수');
   metrics.declare('skala_players', 'gauge', '방에 들어간 사람 수');
+  metrics.declare('skala_messages_in_per_second', 'gauge', '지난 통계 창의 초당 받은 메시지(검사 통과)');
+  metrics.declare('skala_messages_out_per_second', 'gauge', '지난 통계 창의 초당 보낸 메시지');
+  metrics.declare('skala_tick_max_ms', 'gauge', '지난 통계 창에서 가장 오래 걸린 틱(ms, 모든 방)');
   metrics.declare('skala_ticks_total', 'counter', '돈 서버 틱 수');
   metrics.declare('skala_ticks_skipped_total', 'counter', '서버가 밀려 건너뛴 틱 수');
   metrics.declare('skala_messages_in_total', 'counter', '검사를 통과한 받은 메시지(형식별)');
@@ -77,7 +92,11 @@ export async function startServer(options = {}) {
   function pathOf(target) {
     try { return new URL(target, 'http://local').pathname; } catch { return null; }
   }
-  const roomsByIp = new Map();   // 만든 사람 IP → 그 IP가 만든 열린 방 수
+  function roomWinOf(id) {
+    let w = roomWin.get(id);
+    if (!w) { w = emptyWindow(); roomWin.set(id, w); }
+    return w;
+  }
 
   // ── HTTP ──────────────────────────────────────────────
   function playerCount() {
@@ -88,7 +107,7 @@ export async function startServer(options = {}) {
   function stats() {
     return {
       ok: !closing, version: SERVER_VERSION, protocol: PROTOCOL, uptimeSec: Math.round((Date.now() - startedAt) / 1000),
-      hz: cfg.hz, ticks: loop.ticks, rooms: rooms.size, players: playerCount(), connections: conns.size
+      hz: cfg.hz, ticks: loop.ticks, rooms: rooms.size, players: playerCount(), connections: conns.size, window: lastWindow
     };
   }
   function onHttp(req, res) {
@@ -133,22 +152,29 @@ export async function startServer(options = {}) {
     const path = pathOf(req.url);
     if (closing) return refuse(socket, 503, 'Service Unavailable', 'closing');
     if (path === null) return refuse(socket, 400, 'Bad Request', 'bad_target');
-    if (path !== cfg.path) return refuse(socket, 404, 'Not Found', 'path');
-    if (cfg.allowedOrigins.length && !cfg.allowedOrigins.includes(req.headers.origin)) return refuse(socket, 403, 'Forbidden', 'origin');
+    const roomId = roomIdFromPath(path);
+    if (!roomId) return refuse(socket, 404, 'Not Found', 'path');
+    // Origin은 다른 사이트의 페이지가 붙는 것을 막는다. 값이 없는 요청(봇·부하 시험 같은 브라우저 밖 프로그램)은 어차피 값을 꾸밀 수 있어 막지 않는다
+    const origin = req.headers.origin;
+    if (cfg.allowedOrigins.length && origin && !cfg.allowedOrigins.includes(origin)) return refuse(socket, 403, 'Forbidden', 'origin');
     if (conns.size >= cfg.maxConnections) return refuse(socket, 503, 'Service Unavailable', 'capacity');
     const ip = clientIp(req);
     if ((perIp.get(ip) || 0) >= cfg.maxPerIp) return refuse(socket, 429, 'Too Many Requests', 'per_ip');
-    wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws, ip));
+    wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws, ip, roomId));
   });
 
   // ── 접속 ──────────────────────────────────────────────
-  function send(conn, text) {
+  function sendTo(conn, text) {
     const ws = conn.ws;
     if (conn.closed || ws.readyState !== WebSocket.OPEN) return;
     if (ws.bufferedAmount > cfg.maxBufferedBytes) { drop(conn, CLOSE.SLOW, 'slow_consumer'); return; }
     ws.send(text);
+    const bytes = Buffer.byteLength(text);
     metrics.inc('skala_messages_out_total');
-    metrics.inc('skala_bytes_out_total', null, Buffer.byteLength(text));
+    metrics.inc('skala_bytes_out_total', null, bytes);
+    win.msgOut++;
+    win.bytesOut += bytes;
+    if (conn.room) { const rw = roomWinOf(conn.room.id); rw.msgOut++; rw.bytesOut += bytes; }
   }
 
   /** 방에서 빼고 접속 목록에서 지운다. 여러 번 불려도 한 번만 한다 */
@@ -160,7 +186,8 @@ export async function startServer(options = {}) {
     conns.delete(conn);
     const n = (perIp.get(conn.ip) || 1) - 1;
     if (n > 0) perIp.set(conn.ip, n); else perIp.delete(conn.ip);
-    if (conn.room && conn.pid) conn.room.leave(conn.pid, reason);
+    if (conn.room && conn.playerId) conn.room.leave(conn.playerId, reason);
+    if (conn.playerId) byPlayer.delete(conn.playerId);
     conn.room = null;
   }
 
@@ -184,14 +211,14 @@ export async function startServer(options = {}) {
   function strike(conn, points, reason) {
     metrics.inc('skala_messages_dropped_total', { reason });
     if (conn.strikes.add(points, reason)) {
-      log.warn({ conn: conn.id, ip: ipTag(conn.ip), reasons: conn.strikes.reasons() }, 'closing abusive connection');
+      log.warn({ conn: conn.id, room: conn.roomId, player: conn.playerId, ip: ipTag(conn.ip), reasons: conn.strikes.reasons() }, 'closing abusive connection');
       drop(conn, CLOSE.POLICY, 'policy');
     }
   }
 
-  function onConnection(ws, ip) {
+  function onConnection(ws, ip, roomId) {
     const conn = {
-      id: ++connSeq, ws, ip, room: null, pid: null, rtt: null, pingAt: 0, waitingPong: false, closed: false, detached: false,
+      id: ++connSeq, ws, ip, roomId, room: null, playerId: null, rtt: null, pingAt: 0, waitingPong: false, closed: false, detached: false,
       bucket: new TokenBucket(cfg.msgRate, cfg.msgBurst), strikes: createStrikes({ limit: cfg.strikeLimit }),
       joinTimer: null
     };
@@ -202,14 +229,14 @@ export async function startServer(options = {}) {
       try {
         onMessage(conn, data, isBinary);
       } catch (err) {
-        log.error({ err, conn: conn.id, room: conn.room && conn.room.id }, 'message handling failed');
+        log.error({ err, conn: conn.id, room: conn.roomId, player: conn.playerId }, 'message handling failed');
         drop(conn, CLOSE.ROOM_ERROR, 'internal_error');
       }
     });
     ws.on('pong', () => { conn.waitingPong = false; conn.rtt = performance.now() - conn.pingAt; });
     ws.on('close', (code) => detach(conn, `closed_${code}`));
     ws.on('error', (err) => log.debug({ conn: conn.id, err }, 'socket error'));
-    log.debug({ conn: conn.id, ip: ipTag(ip) }, 'connected');
+    log.debug({ conn: conn.id, room: roomId, ip: ipTag(ip) }, 'connected');
   }
 
   function ping(conn) {
@@ -228,9 +255,11 @@ export async function startServer(options = {}) {
     if (!res.ok) return strike(conn, res.reason === 'unknown_type' ? 0.25 : 1, res.reason);
     const msg = res.msg;
     metrics.inc('skala_messages_in_total', { type: msg.t });
+    win.msgIn++;
     if (msg.t === 'join') return onJoin(conn, msg);
     if (!conn.room) return strike(conn, 1, 'not_joined');
-    conn.room.handle(conn.pid, msg);
+    roomWinOf(conn.room.id).msgIn++;
+    conn.room.input(conn.playerId, msg);
   }
 
   function roomOptions(opts) {
@@ -244,14 +273,16 @@ export async function startServer(options = {}) {
   function onJoin(conn, msg) {
     if (conn.room) return strike(conn, 1, 'double_join');
     if (msg.v !== PROTOCOL) return drop(conn, CLOSE.BAD_VERSION, 'bad_version', `server protocol ${PROTOCOL}`);
-    let room = rooms.get(msg.room);
+    const roomId = conn.roomId;
+    let room = rooms.get(roomId);
     if (!room) {
       if (rooms.size >= cfg.maxRooms) return drop(conn, CLOSE.SERVER_FULL, 'server_full');
       // 한 IP가 1인 방을 잔뜩 만들어 방 수 상한을 채우지 못하게 한다
       if ((roomsByIp.get(conn.ip) || 0) >= cfg.maxRoomsPerIp) return drop(conn, CLOSE.SERVER_FULL, 'too_many_rooms');
-      const roomId = msg.room;
       const opts = roomOptions(msg.opts);
       room = createRoom({
+        send: (pid, text) => { const c = byPlayer.get(pid); if (c) sendTo(c, text); },
+        rttOf: (pid) => { const c = byPlayer.get(pid); return c ? c.rtt : null; },
         id: roomId, ...opts, hz: cfg.hz, substeps: cfg.substeps, roomSize: cfg.roomSize, maxRewindMs: cfg.maxRewindMs,
         historyTicks: cfg.historyTicks, snapshotEvery: cfg.snapshotEvery, matchEvery: cfg.matchEvery, rules: cfg.matchRules,
         rng: mulberry32(Math.floor(master() * 0xffffffff)), log, onEmpty: () => closeRoom(roomId, 'empty')
@@ -261,14 +292,18 @@ export async function startServer(options = {}) {
       rooms.set(roomId, room);
       log.info({ room: roomId, ...opts, by: ipTag(conn.ip) }, 'room created');
     }
-    const peer = { send: (text) => send(conn, text), rtt: () => conn.rtt };
-    const r = room.join({ name: msg.name, team: msg.team, peer });
+    const playerId = `p${++playerSeq}`;   // 신원은 서버가 정한다
+    byPlayer.set(playerId, conn);         // join 안에서 보내는 welcome이 닿게 먼저 잇는다
+    conn.room = room;
+    conn.playerId = playerId;
+    const r = room.join(playerId, { name: msg.name, team: msg.team });
     if (!r.ok) {
+      byPlayer.delete(playerId);
+      conn.room = null;
+      conn.playerId = null;
       if (!room.size) closeRoom(room.id, 'empty');
       return drop(conn, r.code === 'room_full' ? CLOSE.ROOM_FULL : CLOSE.BAD_JOIN, r.code);
     }
-    conn.room = room;
-    conn.pid = r.id;
     clearTimeout(conn.joinTimer);
     ping(conn);   // 첫 왕복 시간을 바로 잰다
   }
@@ -277,6 +312,7 @@ export async function startServer(options = {}) {
     const room = rooms.get(id);
     if (!room) return;
     rooms.delete(id);
+    roomWin.delete(id);
     const n = (roomsByIp.get(room.creatorIp) || 1) - 1;
     if (n > 0) roomsByIp.set(room.creatorIp, n); else roomsByIp.delete(room.creatorIp);
     for (const conn of conns) if (conn.room === room) drop(conn, CLOSE.ROOM_ERROR, reason);
@@ -288,17 +324,55 @@ export async function startServer(options = {}) {
   function tickAll() {
     const t0 = performance.now();
     for (const room of rooms.values()) {
+      const r0 = performance.now();
       try {
-        room.step();
+        room.tick();
       } catch (err) {
         metrics.inc('skala_room_errors_total');
-        log.error({ err, room: room.id }, 'room step failed; closing room');
+        log.error({ err, room: room.id }, 'room tick failed; closing room');
         closeRoom(room.id, 'room_error');
+        continue;
       }
+      const ms = performance.now() - r0;
+      const rw = roomWinOf(room.id);
+      rw.tickMs += ms;
+      rw.ticks++;
+      if (ms > rw.tickMax) rw.tickMax = ms;
     }
-    metrics.observe('skala_tick_duration_ms', performance.now() - t0);
+    const ms = performance.now() - t0;
+    metrics.observe('skala_tick_duration_ms', ms);
     metrics.inc('skala_ticks_total');
+    win.tickMs += ms;
+    win.ticks++;
+    if (ms > win.tickMax) win.tickMax = ms;
   }
+
+  /** 통계 창 하나를 로그(서버 한 줄 + 방마다 한 줄)와 지표로 내고 비운다 */
+  function reportStats() {
+    const sec = Math.max(0.001, (performance.now() - win.start) / 1000);
+    const perSec = (n) => round1(n / sec);
+    lastWindow = {
+      sec: round1(sec), rooms: rooms.size, players: playerCount(), connections: conns.size,
+      tickMsAvg: win.ticks ? round3(win.tickMs / win.ticks) : 0, tickMsMax: round3(win.tickMax),
+      msgInPerSec: perSec(win.msgIn), msgOutPerSec: perSec(win.msgOut), kbOutPerSec: perSec(win.bytesOut / 1024)
+    };
+    metrics.set('skala_messages_in_per_second', null, lastWindow.msgInPerSec);
+    metrics.set('skala_messages_out_per_second', null, lastWindow.msgOutPerSec);
+    metrics.set('skala_tick_max_ms', null, lastWindow.tickMsMax);
+    log.info(lastWindow, 'server stats');
+    for (const room of rooms.values()) {
+      const rw = roomWin.get(room.id) || emptyWindow();
+      log.info({
+        room: room.id, players: room.size, phase: room.phase, tick: room.currentTick,
+        tickMsAvg: rw.ticks ? round3(rw.tickMs / rw.ticks) : 0, tickMsMax: round3(rw.tickMax),
+        msgInPerSec: perSec(rw.msgIn), msgOutPerSec: perSec(rw.msgOut), kbOutPerSec: perSec(rw.bytesOut / 1024),
+        avgRewindMs: room.stats().avgRewindMs
+      }, 'room stats');
+    }
+    win = { ...emptyWindow(), start: performance.now() };
+    roomWin = new Map();
+  }
+
   const loop = createLoop({
     hz: cfg.hz,
     step: tickAll,
@@ -320,6 +394,7 @@ export async function startServer(options = {}) {
       ping(conn);
     }
   }, cfg.pingIntervalMs);
+  const statsTimer = setInterval(reportStats, cfg.statsIntervalMs);
 
   await new Promise((resolve, reject) => {
     httpServer.once('error', reject);
@@ -328,13 +403,14 @@ export async function startServer(options = {}) {
   const port = httpServer.address().port;
   const host = cfg.host === '0.0.0.0' || cfg.host === '::' ? '127.0.0.1' : cfg.host;
   loop.start();
-  log.info({ host: cfg.host, port, path: cfg.path, hz: cfg.hz, roomSize: cfg.roomSize, maxRewindMs: cfg.maxRewindMs, version: SERVER_VERSION }, 'server listening');
+  log.info({ host: cfg.host, port, hz: cfg.hz, roomSize: cfg.roomSize, maxRewindMs: cfg.maxRewindMs, version: SERVER_VERSION }, 'server listening');
 
   async function close() {
     if (closing) return;
     closing = true;
     loop.stop();
     clearInterval(heartbeat);
+    clearInterval(statsTimer);
     const open = [...conns];
     for (const conn of open) drop(conn, CLOSE.GOING_AWAY, 'server_shutdown');
     // 닫기 인사를 잠깐 기다렸다가 남은 소켓은 끊는다
@@ -348,5 +424,6 @@ export async function startServer(options = {}) {
     log.info(stats(), 'server closed');
   }
 
-  return { url: `ws://${host}:${port}${cfg.path}`, httpUrl: `http://${host}:${port}`, port, close, stats, metrics, rooms, config: cfg };
+  const url = `ws://${host}:${port}`;
+  return { url, roomUrl: (id) => `${url}/room/${id}`, httpUrl: `http://${host}:${port}`, port, close, stats, metrics, rooms, config: cfg };
 }

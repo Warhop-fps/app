@@ -7,7 +7,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createFakeClient } from '../tools/fake-client.mjs';
+import { createFakeClient } from '../tools/fake-client.js';
 import { FAST_RULES, startTestServer } from './helpers.mjs';
 
 /** promise가 ms 안에 끝나지 않으면 reject. 끝나면 타이머를 지워 프로세스를 붙잡지 않는다 */

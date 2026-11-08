@@ -1,14 +1,14 @@
 /*
  * Date: 06NOV2026
  * Author: Minkyu Jung
- * Purpose: 지연 보정 시험. 위치 기록의 보간·순간이동·생존·링 버퍼, 되감기 상한 자르기, 그리고 방에서 움직이는 적을 지난 화면 기준으로 쐈을 때
+ * Purpose: 권위 서버의 지연 보정 시험. 위치 기록의 보간·순간이동·생존·링 버퍼, 되감기 상한 자르기, 그리고 방에서 움직이는 적을 지난 화면 기준으로 쐈을 때
  *          되감으면 맞고(되감기 양도 맞다), 되감지 않거나 상한 너머를 우기거나 되감기를 끄면 빗나가는 것을 본다.
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createHistory, rewindTarget, TELEPORT_DIST } from '../src/lagcomp.mjs';
-import { KEY, PRESS, aimFromTo, roomWith } from './helpers.mjs';
+import { createHistory, rewindTarget, TELEPORT_DIST } from '../server/core/lagcomp.js';
+import { KEY, PRESS, aimFromTo, roomWith } from './server-room-kit.mjs';
 
 const row = (id, x, extra = {}) => ({ id, team: 'owner', x, y: 0, z: 0, yaw: 0, crouch: 0, alive: true, ...extra });
 
@@ -64,26 +64,26 @@ describe('방에서 되감아 맞히기', () => {
    * B가 옆으로 걷는 동안 A가 back틱 전 화면의 B 가슴을 겨눠 한 발 쏜다.
    * @returns {{hit:boolean, rewind:number|null, moved:number}} moved = 그 사이 B가 옮긴 거리(m)
    */
-  function shootPast({ maxRewindMs = 300, back = 6, vt = 'past' } = {}) {
+  function shootPast({ maxRewindMs = 300, back = 6, viewTick = 'past' } = {}) {
     const t = roomWith({ maxRewindMs, rules: { loadoutMs: 0, roundTimeMs: 60000, hp: 10000 } }, [{ team: 'owner' }, { team: 'charterer' }]);
-    t.room.handle(t.ids[0], { t: 'start' });
+    t.room.input(t.ids[0], { t: 'start' });
     t.steps(2);
     const A = t.actor(0), B = t.actor(1);
     A.spawn({ x: -6, z: 0, rotY: -Math.PI / 2 });
     B.spawn({ x: 6, z: -8, rotY: Math.PI / 2 });
     for (let i = 0; i < 45; i++) {   // 꺼내기·조준을 마치는 동안 B는 +z로 걷는다(약 5 m/s)
-      t.input(0, { k: KEY.AIM });
-      t.input(1, { k: KEY.LEFT });
-      t.room.step();
+      t.input(0, { keys: KEY.AIM });
+      t.input(1, { keys: KEY.LEFT });
+      t.room.tick();
     }
-    const now = t.room.tick;
+    const now = t.room.currentTick;
     const past = now - back;
     const pastB = t.room.history.sample(past).find((r) => r.id === B.id);
     const { yaw, pitch } = aimFromTo(A, [pastB.x, pastB.y, pastB.z]);
     t.peers[0].clear();
-    t.input(0, { k: KEY.AIM | KEY.FIRE, b: PRESS.FIRE, y: yaw, p: pitch, vt: vt === 'past' ? past : vt });
-    t.input(1, { k: KEY.LEFT });
-    t.room.step();
+    t.input(0, { keys: KEY.AIM | KEY.FIRE, press: PRESS.FIRE, yaw, pitch, viewTick: viewTick === 'past' ? past : viewTick });
+    t.input(1, { keys: KEY.LEFT });
+    t.room.tick();
     const evs = t.peers[0].events();
     const fire = evs.find((e) => e.type === 'fire' && e.id === A.id);
     assert.ok(fire, '쐈다');
@@ -98,11 +98,11 @@ describe('방에서 되감아 맞히기', () => {
     const r = shootPast({ back: 6 });
     assert.ok(r.moved > 0.9, `그 사이 B가 1 m 가까이 움직였다: ${r.moved}`);
     assert.equal(r.hit, true);
-    assert.equal(r.rewind, 7, '되감기 = 지금 틱 − vt(이 입력은 다음 틱에 처리된다)');
+    assert.equal(r.rewind, 7, '되감기 = 지금 틱 − viewTick(이 입력은 다음 틱에 처리된다)');
   });
 
-  test('되감지 않으면(vt 없음) 같은 조준이 빗나간다', () => {
-    assert.equal(shootPast({ back: 6, vt: null }).hit, false);
+  test('되감지 않으면(viewTick 없음) 같은 조준이 빗나간다', () => {
+    assert.equal(shootPast({ back: 6, viewTick: null }).hit, false);
   });
 
   test('상한(300 ms = 9틱)보다 오래된 화면을 우기면 상한까지만 되감아 빗나간다', () => {
@@ -111,7 +111,7 @@ describe('방에서 되감아 맞히기', () => {
     assert.equal(r.hit, false);
   });
 
-  test('되감기를 끈 서버(maxRewindMs 0)에서는 지난 화면 조준이 빗나간다', () => {
+  test('되감기를 끈 방(maxRewindMs 0)에서는 지난 화면 조준이 빗나간다', () => {
     const r = shootPast({ maxRewindMs: 0, back: 6 });
     assert.equal(r.hit, false);
     assert.equal(r.rewind, 1, '가장 최근 기록(지난 틱)만 쓴다');
