@@ -12,19 +12,8 @@ import { readFileSync } from 'node:fs';
 import {
   MAX_PLAYERS, MAX_POINTS, SIG_SCOPE, WINDOW_MS, canonicalize, keyId, resultProblem, signResult, signingText, verifyEnvelope
 } from '../server/api/src/result-sign.js';
+import { VEC_KID, VEC_SECRET, VEC_SIG, vecResult } from './result-vectors.mjs';
 
-// 시험 벡터. docs/MATCH_RESULT_CONTRACT.md 6절과 같은 값이다(바꾸면 둘 다 바꾼다)
-export const VEC_SECRET = 'test-secret-0123456789abcdef-0123456789';
-export const VEC_KID = 'k3838131de372e21d';
-export const VEC_SIG = 'ycL25j3JSKtERRFj5Y2tGghVKqSiYtYwUOmOFEitE0M';
-export const vecResult = () => ({
-  protocol: 1, resultId: 'room-A1:3', roomId: 'room-A1', matchSeq: 3, serverId: 'ec2-a:1', mode: 'ffa', map: 'cqb',
-  startedAt: 1795000000000, endedAt: 1795000600000, signedAt: 1795000601000,
-  players: [
-    { tokenHash: 'a'.repeat(64), kills: 12, deaths: 3, placement: 1, points: 170 },
-    { tokenHash: 'b'.repeat(64), kills: 4, deaths: 9, placement: 2, points: 40 }
-  ]
-});
 const VEC_TEXT = SIG_SCOPE + '{"endedAt":1795000600000,"map":"cqb","matchSeq":3,"mode":"ffa","players":['
   + '{"deaths":3,"kills":12,"placement":1,"points":170,"tokenHash":"' + 'a'.repeat(64) + '"},'
   + '{"deaths":9,"kills":4,"placement":2,"points":40,"tokenHash":"' + 'b'.repeat(64) + '"}],'

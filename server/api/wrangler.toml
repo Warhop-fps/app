@@ -1,7 +1,7 @@
 # Date: 06NOV2026
 # Author: Minkyu Jung
 # Purpose: 로그인 연결·테스트 결제 API Worker(skala-api) 설정. 무료 플랜으로 돈다(Durable Object 없음).
-#          비밀 값(Supabase 비밀 키, 토스 키, 구글·카카오 client id·secret, 로그인 표 서명 값)은 wrangler secret put으로 넣는다(README.md 3절).
+#          비밀 값(Supabase 비밀 키, 토스 키, 구글·카카오 client id·secret, 로그인 표 서명 값, 경기 결과 서명 값 GAME_RESULT_SECRET)은 wrangler secret put으로 넣는다(README.md 3절).
 #          배포(wrangler deploy)는 소유자가 정한다.
 name = "skala-api"
 main = "src/worker.js"

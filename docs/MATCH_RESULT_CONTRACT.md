@@ -132,7 +132,7 @@ await fetch(`${API_URL}/v1/match-result`, { method: 'POST', headers: { 'content-
 | 무엇 | 값 |
 |---|---|
 | 비밀 값 | `test-secret-0123456789abcdef-0123456789` |
-| result | `tests/result-sign.test.mjs`의 `vecResult()` (방 `room-A1`, 3번째 경기, `ffa`/`cqb`, 두 사람 170P·40P) |
+| result | `tests/result-vectors.mjs`의 `vecResult()` (방 `room-A1`, 3번째 경기, `ffa`/`cqb`, 두 사람 170P·40P) |
 | kid | `k3838131de372e21d` |
 | sig | `ycL25j3JSKtERRFj5Y2tGghVKqSiYtYwUOmOFEitE0M` |
 
