@@ -10,7 +10,7 @@
  */
 import { computePerks, perkSummary, cardById, TIERS } from './cards.js';
 import { HORDE, fmtClock, hordeAmmo } from './rules.js';
-import { zombieHitDamage, nadeDamage } from './director.js';
+import { zombieHitDamage, nadeDamage } from './damage.js';
 import { WEAPONS } from '../../weapons/defs.js';
 import { SKILL_NAMES, skillKindOf, HAZARD_KINDS, bossById } from './bosses.js';
 import { t, loc } from '../../core/i18n.js';
