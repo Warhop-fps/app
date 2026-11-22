@@ -49,6 +49,7 @@ import { isZombieMap } from '../maps/collision.js';
 import { t, loc } from '../core/i18n.js';
 import { maskProfanity } from '../core/profanity.js';
 import { platform } from '../platform/index.js';
+import { matchSummary, ffaTarget } from './rules/summary.js';
 
 export const SESSION_DEFAULTS = Object.freeze({
   maxPlayers: 6,          // Supabase Realtime(transport 'supabase') 무료 한도(3:3). 방 만들기 max는 2..이 값으로 자른다
@@ -272,41 +273,8 @@ export function weaponForSlot(gear, slot, ruleset, confirmed, zombie = false) {
   return isPickable(rs.id, confirmed, zombie) ? confirmed : rs.defaultPick;
 }
 
-/** 결과표의 내 줄. matchEnd 뷰가 있으면 그것, 아니면 matchEnd 이벤트의 표(늦게 온 이벤트라 스냅샷이 없을 때) */
-function myStats(view, event, me) {
-  const vp = view && Array.isArray(view.players) ? view.players.find((p) => p.id === me) : null;
-  if (vp && view.phase === 'matchEnd') return vp;
-  const ev = event && typeof event === 'object' ? event : {};
-  const ranked = Array.isArray(ev.ranking) ? ev.ranking.find((r) => r && String(r.id) === me) : null;
-  if (ranked) return ranked;
-  const row = Array.isArray(ev.stats) ? ev.stats.find((r) => Array.isArray(r) && String(r[0]) === me) : null;
-  if (row) return { kills: row[1], deaths: row[2], headshots: row[3], halfShots: row[5] };
-  return vp;
-}
-
-/**
- * 경기 결과 → account.recordMatch의 summary. 결과표에 내가 없으면 null.
- * 킬·데스·헤드샷·반샷은 방장이 확정한 값이다(방장이 바뀌었으면 합산된 값). knifeKills만 내가 본 킬 이벤트로 세므로 킬 수를 넘지 못하게 자른다.
- * 개인전이면 그 경기의 목표 킬(killTarget)도 싣는다. 짧은 판의 승리 보상을 줄이는 데 쓴다(account/economy.js).
- * o: { view, event, me, mode, ruleset, mapId, team, knifeKills, seconds }
- */
-export function matchSummary(o) {
-  const me = String(o.me);
-  const row = myStats(o.view, o.event, me);
-  if (!row) return null;
-  const ffa = o.mode === 'ffa';
-  const res = (o.view && o.view.result) || o.event || {};
-  const winner = res.winner == null || res.winner === 'draw' ? null : String(res.winner);
-  const kills = row.kills | 0;
-  return {
-    online: true, ruleset: normalizeRuleset(o.ruleset), mode: ffa ? 'ffa' : o.mode === 'bomb' ? 'bomb' : 'team', mapId: o.mapId,
-    kills, deaths: row.deaths | 0, headshots: row.headshots | 0, halfShots: row.halfShots | 0,
-    knifeKills: Math.min(kills, o.knifeKills | 0),
-    win: !!winner && winner === (ffa ? me : o.team), draw: !winner,
-    seconds: Math.max(0, Math.round(Number(o.seconds) || 0)),
-    ...(ffa ? { killTarget: ffaTarget(o.view) } : {})
-  };
-}
+/** 경기 결과 → 보상 요약(matchSummary)은 서버와 함께 쓰는 순수 모듈로 옮겼다(game/rules/summary.js). 예전 import 길을 그대로 둔다 */
+export { matchSummary };
 
 /* ======================================================================
  * 방장 이전 복원: 이전 방장의 match 스냅샷(점수·라운드 기록·개인 기록·규칙)을 이어받아
@@ -514,12 +482,6 @@ const FFA_REASON_TEXT = Object.freeze({ kills: t('room.ffaReasonKills'), time: t
 function weaponLabel(id) {
   const d = id ? getDef(normalizeWeaponId(id) || String(id)) : null;
   return d ? String(d.name || d.short || '') : '';
-}
-
-/** FFA 목표 킬 수(view.rules.killTarget → view.killTarget → 20) */
-function ffaTarget(v) {
-  const t = Number((v && v.rules && v.rules.killTarget) || (v && v.killTarget));
-  return Number.isFinite(t) && t > 0 ? t : 20;
 }
 
 /**

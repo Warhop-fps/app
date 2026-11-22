@@ -7,24 +7,29 @@
 /**
  *   const room = createRoom({ send: (playerId, text) => socketOf(playerId).send(text), id: 'abc', map: 'arena' });
  *   room.join(playerId, { name, team });   // 신원(playerId)은 어댑터가 정한다 → { ok, team } | { ok:false, code }
- *   room.input(playerId, msg);             // protocol.decodeClient로 검사한 input·pick·team·start
+ *   room.input(playerId, msg);             // protocol.decodeClient로 검사한 input·pick·team·start·respawn. 쌓아 두었다가 다음 틱에 순서대로 처리한다
  *   room.tick();                           // 틱 하나(어댑터가 1/hz초마다 부른다). 틱 길이는 만들 때 hz로 정해진다
  *   room.leave(playerId);
  *   room.size                              // 사람 수
  *
  * send(playerId, text)의 text는 이미 JSON 글자다. 모두에게 같은 스냅샷 앞부분을 틱마다 한 번만 직렬화하려고 방이 직접 만든다.
  *
+ * 방 하나 = 한 줄로 도는 actor. 받은 메시지는 방의 받은 줄(inbox)에 도착 순서대로 쌓이고, 틱이 시작할 때 그 순서 그대로 꺼낸다.
+ * 방끼리는 아무것도 나눠 쓰지 않는다(맵 충돌체만 읽기 전용으로 함께 본다, core/maps.js). 그래서 방을 프로세스마다 나눠도 규칙이 같다.
+ *
  * 틱 순서
+ *   0. 받은 줄을 비운다: pick·team·start·respawn을 도착 순서대로 경기 규칙(match)에 넣는다. input은 받을 때 그 사람의 입력 줄에 들어가 있다
  *   1. 사람마다 입력 하나 → 이동·무기(사격은 그 자리에서 되감아 판정해 match.claimHit). 처리 순서는 틱마다 한 칸씩 돈다
  *   2. 수류탄 → 폭발은 지금 자리로 피해 계산해 match.claimExplosion
  *   3. match.tick(경기 시계) → 라운드 시작·끝 이벤트를 사람에게 적용(스폰·얼림·로드아웃)
  *   4. 이 틱의 자리를 지연 보정 기록에 남긴다(기록 k = 스냅샷 k)
  *   5. 스냅샷(틱마다) · 이벤트(있으면) · 점수판(이벤트가 있었거나 0.5초마다)
+ *   경기가 끝나면(matchEnd) 사람마다 보상(core/rewards.js)을 계산해 그 사람에게만 { type:'reward' } 이벤트로 보낸다.
  * 틱 밖에서 생긴 일(입장·퇴장·무기 선택)의 이벤트도 다음 틱 끝에 함께 나간다.
  */
 import { PLAYER } from '../../js/core/consts.js';
 import { createMatch } from '../../js/game/match.js';
-import { normalizeRuleset, shotTargets } from '../../js/game/modes.js';
+import { normalizeKillTarget, normalizeRuleset, shotTargets } from '../../js/game/modes.js';
 import { getDef } from '../../js/weapons/defs.js';
 import { createGrenadeSystem } from '../../js/weapons/grenade.js';
 import { createActor } from './actor.js';
@@ -32,6 +37,7 @@ import { meleeTrace, resolveShot } from './combat.js';
 import { createHistory, rewindTarget } from './lagcomp.js';
 import { loadMap } from './maps.js';
 import { PROTOCOL, ROW } from './protocol.js';
+import { QUICK_RESPAWN_COST, matchRewards } from './rewards.js';
 
 const round2 = (v) => Math.round(v * 100) / 100;
 const r2 = (v) => [round2(v[0]), round2(v[1]), round2(v[2])];
@@ -44,6 +50,8 @@ const r2 = (v) => [round2(v[0]), round2(v[1]), round2(v[2])];
  * @param {string} [o.map='arena'] maps.MAP_CHOICES 중 하나
  * @param {'team'|'ffa'} [o.mode='team']
  * @param {string} [o.ruleset='classic']
+ * @param {number} [o.killTarget] 개인전 목표 킬(5~20, modes.FFA_KILLS). 없으면 20. rules.killTarget이 있으면 그것(시험·연습장 값)
+ * @param {number} [o.inboxMax=512] 방의 받은 줄 상한(틱 하나 사이에 이보다 많이 오면 오래된 것부터 버린다)
  * @param {number} [o.hz=30] 서버 틱
  * @param {number} [o.substeps=2] 입력 하나를 나눠 돌리는 이동 횟수(1/60초 이동)
  * @param {number} [o.roomSize=6] 정원
@@ -58,7 +66,7 @@ const r2 = (v) => [round2(v[0]), round2(v[1]), round2(v[2])];
  */
 export function createRoom(o) {
   const {
-    send, rttOf = null, id = 'room', map = 'arena', mode = 'team', ruleset = 'classic', hz = 30, substeps = 2, roomSize = 6,
+    send, rttOf = null, id = 'room', map = 'arena', mode = 'team', ruleset = 'classic', killTarget = null, inboxMax = 512, hz = 30, substeps = 2, roomSize = 6,
     maxRewindMs = 300, historyTicks = 64, snapshotEvery = 1, matchEvery = 15, rules = {},
     rng = Math.random, log = null, onEmpty = null
   } = o;
@@ -70,13 +78,17 @@ export function createRoom(o) {
   const tickMs = 1000 / hz;
   const tickDt = 1 / hz;
   const maxRewindTicks = (Math.max(0, maxRewindMs) / 1000) * hz;
-  const matchRules = { ...rules, mode, ruleset: rs, maxPlayers: roomSize, maxPerTeam: Math.ceil(roomSize / 2) };
+  const kt = ffa ? (rules.killTarget != null ? rules.killTarget : normalizeKillTarget(killTarget)) : undefined;
+  const matchRules = { ...rules, mode, ruleset: rs, maxPlayers: roomSize, maxPerTeam: Math.ceil(roomSize / 2), ...(ffa ? { killTarget: kt } : {}) };
   const ffaSpots = [...built.spawns.owner, ...built.spawns.charterer, ...(built.spawns.ffa || [])];
 
   const actors = new Map();   // 입장 순서
   const history = createHistory({ size: historyTicks });
   const nades = createGrenadeSystem({ world: built.world });
-  const counters = { shots: 0, hits: 0, rewinds: 0, rewindTicks: 0, clamped: 0, explosions: 0 };
+  const counters = { shots: 0, hits: 0, rewinds: 0, rewindTicks: 0, clamped: 0, explosions: 0, quickRespawns: 0, inboxDropped: 0 };
+  const inbox = [];          // [playerId, msg] 도착 순서
+  const quick = new Map();   // 사람별 이번 경기 즉시 부활 횟수(보상에서 뺀다)
+  let liveTick = null;       // 경기가 live가 된 틱(보상의 경기 길이)
   let match = newMatch();
   let phase = 'warmup';
   let tickNo = 0;
@@ -108,7 +120,8 @@ export function createRoom(o) {
   }
   function welcome(pid, team) {
     return JSON.stringify({
-      t: 'welcome', v: PROTOCOL, playerId: pid, team, room: id, hz, tick: tickNo, map: built.id, mode, ruleset: rs, leader, maxRewindMs, row: ROW
+      t: 'welcome', v: PROTOCOL, playerId: pid, team, room: id, hz, tick: tickNo, map: built.id, mode, ruleset: rs,
+      killTarget: ffa ? match.rules.killTarget : null, leader, maxRewindMs, row: ROW
     });
   }
   function sendSnapshots() {
@@ -185,6 +198,7 @@ export function createRoom(o) {
         break;
       case 'phase':
         phase = ev.phase;
+        if (ev.phase === 'live' && liveTick == null) liveTick = tickNo;
         if (ev.phase === 'live' && ev.loadouts) {
           for (const [pid, w] of Object.entries(ev.loadouts)) { const a = actors.get(pid); if (a) a.setPick(w, true); }
         }
@@ -197,8 +211,28 @@ export function createRoom(o) {
       case 'damage': { const a = actors.get(ev.victim); if (a) a.setHp(ev.hp); break; }
       case 'kill': { const a = actors.get(ev.victim); if (a) a.kill(); break; }
       case 'spawn': { const a = actors.get(ev.id); if (a) a.spawn(ev.spawn, ev.loadout); break; }
+      case 'matchEnd': sendRewards(ev); break;
       default: break;
     }
+  }
+
+  /** 경기 끝: 사람마다 보상을 계산해 그 사람에게만 보낸다. 포인트 저장은 아직 클라이언트 몫이다(docs/SERVER.md 11절) */
+  function sendRewards(ev) {
+    const players = [...actors.values()].map((a) => ({ id: a.id, team: a.team }));
+    const seconds = liveTick == null ? 0 : Math.round(((tickNo - liveTick) * tickMs) / 1000);
+    for (const r of matchRewards(ev, { players, mode: ffa ? 'ffa' : 'team', ruleset: rs, mapId: built.id, killTarget: match.rules.killTarget, seconds, quick })) {
+      direct(r.id, { type: 'reward', id: r.id, summary: r.summary, reward: r.reward, quick: r.quick, cost: r.quick * QUICK_RESPAWN_COST });
+    }
+  }
+
+  /** 개인전 즉시 부활: 경기가 허락하면(instant spawn) 횟수를 센다. 거절(not_waiting·too_late 등)은 그 사람에게만 간다 */
+  function respawn(pid) {
+    const evs = match.respawnNow(pid);
+    if (evs.some((e) => e.type === 'spawn' && e.id === pid && e.instant)) {
+      quick.set(pid, (quick.get(pid) || 0) + 1);
+      counters.quickRespawns++;
+    }
+    absorb(evs, pid);
   }
 
   // ── 판정 ──────────────────────────────────────────────
@@ -323,16 +357,28 @@ export function createRoom(o) {
     match.dispose();
     nades.clear();
     phase = 'warmup';
+    quick.clear();
+    liveTick = null;
     match = newMatch();
     for (const a of actors.values()) absorb(match.addPlayer({ id: a.id, name: a.name, team: a.team }));
   }
 
-  /** 검사를 통과한 클라이언트 메시지(protocol.decodeClient의 input·pick·team·start) */
+  /** 검사를 통과한 클라이언트 메시지(protocol.decodeClient의 input·pick·team·start·respawn). 받은 줄에 넣고 다음 틱 처음에 처리한다 */
   function input(pid, msg) {
+    if (disposed || !msg) return;
     const a = actors.get(pid);
-    if (!a || !msg) return;
+    if (!a) return;
+    // 이동 입력은 그 사람의 입력 줄(상한 INPUT_QUEUE_MAX, actor.js)로 바로 간다. 틱마다 하나씩 꺼내므로 순서와 속도가 지켜진다
+    if (msg.t === 'input') { a.enqueue(msg); return; }
+    inbox.push([pid, msg]);
+    // 틱이 멈춘 채 메시지만 쌓이지 않게 한다. 접속마다 속도 제한이 있어 평소에는 닿지 않는다
+    while (inbox.length > inboxMax) { inbox.shift(); counters.inboxDropped++; }
+  }
+
+  function handle(pid, msg) {
+    const a = actors.get(pid);
+    if (!a) return;   // 메시지를 보낸 뒤 나갔다
     switch (msg.t) {
-      case 'input': a.enqueue(msg); break;
       case 'pick': absorb(match.setLoadout(pid, msg.weapon), pid); break;
       case 'team': absorb(match.setTeam(pid, msg.team), pid); break;
       case 'start':
@@ -340,6 +386,7 @@ export function createRoom(o) {
         if (phase === 'matchEnd') restart();
         absorb(match.start(), pid);
         break;
+      case 'respawn': respawn(pid); break;
       default: break;
     }
   }
@@ -348,6 +395,10 @@ export function createRoom(o) {
   function tick() {
     if (disposed) return;
     tickNo += 1;
+    if (inbox.length) {
+      const batch = inbox.splice(0);
+      for (const [pid, msg] of batch) handle(pid, msg);
+    }
     const list = [...actors.values()];
     const n = list.length;
     // 처리 순서를 틱마다 한 칸씩 돌린다: 같은 틱에 서로 쏜 두 사람 중 늘 같은 사람이 먼저 맞히지 않게
@@ -369,6 +420,7 @@ export function createRoom(o) {
     disposed = true;
     for (const a of actors.values()) a.dispose();
     actors.clear();
+    inbox.length = 0;
     match.dispose();
     nades.dispose();
   }
@@ -387,6 +439,8 @@ export function createRoom(o) {
     get currentTick() { return tickNo; },
     get phase() { return phase; },
     get leader() { return leader; },
+    get killTarget() { return ffa ? match.rules.killTarget : null; },
+    get inboxSize() { return inbox.length; },
     get match() { return match; },
     get world() { return built.world; },
     get maxRewindTicks() { return maxRewindTicks; },

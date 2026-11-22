@@ -13,7 +13,8 @@ export const DEFAULTS = Object.freeze({
   substeps: 2,              // 입력 하나를 나눠 돌리는 이동 횟수(1/60초씩, 브라우저 고정 틱과 같다)
   snapshotEvery: 1,         // 스냅샷 간격(틱)
   matchEvery: 15,           // 점수판 간격(틱, 0.5초)
-  roomSize: 6,              // 방 정원
+  roomSize: 6,              // 팀전 방 정원
+  ffaRoomSize: 16,          // 개인전 방 정원(중계 서버의 16인방과 같다)
   maxRooms: 50,
   maxRoomsPerIp: 4,         // 한 IP가 만든 열린 방 수(1인 방으로 방 수 상한을 채우지 못하게)
   maxConnections: 300,
@@ -32,6 +33,7 @@ export const DEFAULTS = Object.freeze({
   defaultMap: 'arena',
   defaultMode: 'team',
   defaultRuleset: 'classic',
+  defaultKillTarget: null,  // 개인전 목표 킬(방장이 opts.killTarget을 주지 않았을 때). null이면 20
   matchRules: Object.freeze({}),   // createMatch 규칙 덮어쓰기(데모·시험의 짧은 라운드)
   allowedOrigins: Object.freeze([]), // 비어 있으면 Origin을 보지 않는다(개발). 운영은 사이트 주소만. Origin이 없는 요청(브라우저 밖)은 통과
   trustProxy: false,        // true면 X-Forwarded-For의 첫 주소를 접속 IP로 본다(Caddy 뒤에서만 켠다)
@@ -43,7 +45,9 @@ const USAGE = `사용법: node server/node.js [옵션]   방 주소: ws://<호�
   --port <n>            포트 (기본 ${DEFAULTS.port}, 환경 변수 PORT. 0이면 빈 포트)
   --host <addr>         받을 주소 (기본 ${DEFAULTS.host}, 환경 변수 HOST. Caddy 뒤에서는 127.0.0.1)
   --hz <n>              서버 틱 (기본 ${DEFAULTS.hz})
-  --room-size <n>       방 정원 (기본 ${DEFAULTS.roomSize})
+  --room-size <n>       팀전 방 정원 (기본 ${DEFAULTS.roomSize})
+  --ffa-room-size <n>   개인전 방 정원 (기본 ${DEFAULTS.ffaRoomSize})
+  --kill-target <n>     개인전 목표 킬 기본값 5~20 (기본 20)
   --max-rooms <n>       방 수 상한 (기본 ${DEFAULTS.maxRooms})
   --max-rewind-ms <n>   되감기 상한 (기본 ${DEFAULTS.maxRewindMs}, 0이면 지연 보정 끔)
   --map <id>            새 방의 기본 맵 (기본 ${DEFAULTS.defaultMap}: ${MAP_CHOICES.join(', ')})
@@ -80,7 +84,7 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env) {
     allowPositionals: false,
     options: {
       port: { type: 'string' }, host: { type: 'string' }, hz: { type: 'string' },
-      'room-size': { type: 'string' }, 'max-rooms': { type: 'string' }, 'max-rewind-ms': { type: 'string' },
+      'room-size': { type: 'string' }, 'ffa-room-size': { type: 'string' }, 'kill-target': { type: 'string' }, 'max-rooms': { type: 'string' }, 'max-rewind-ms': { type: 'string' },
       map: { type: 'string' }, mode: { type: 'string' }, ruleset: { type: 'string' },
       origins: { type: 'string' }, 'trust-proxy': { type: 'boolean' }, 'log-level': { type: 'string' },
       'round-sec': { type: 'string' }, 'loadout-sec': { type: 'string' }, 'round-end-sec': { type: 'string' },
@@ -93,6 +97,8 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env) {
   if (values.host ?? env.HOST) c.host = values.host ?? env.HOST;
   if (values.hz !== undefined) c.hz = int('--hz', values.hz, 10, 128);
   if (values['room-size'] !== undefined) c.roomSize = int('--room-size', values['room-size'], 2, 16);
+  if (values['ffa-room-size'] !== undefined) c.ffaRoomSize = int('--ffa-room-size', values['ffa-room-size'], 2, 16);
+  if (values['kill-target'] !== undefined) c.defaultKillTarget = int('--kill-target', values['kill-target'], 5, 20);
   if (values['max-rooms'] !== undefined) c.maxRooms = int('--max-rooms', values['max-rooms'], 1, 10000);
   if (values['max-rewind-ms'] !== undefined) c.maxRewindMs = int('--max-rewind-ms', values['max-rewind-ms'], 0, 1000);
   if (values.map !== undefined) {

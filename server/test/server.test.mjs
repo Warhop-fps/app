@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { connect } from 'node:net';
 import WebSocket from 'ws';
 
-import { CLOSE, PROTOCOL, ROW } from '../core/protocol.js';
+import { CLOSE, PROTOCOL, RELOAD_MESSAGE, ROW } from '../core/protocol.js';
 import { createLogger, memoryStream } from '../node/log.js';
 import { createFakeClient } from '../tools/fake-client.js';
 import { startTestServer, until } from './helpers.mjs';
@@ -66,6 +66,13 @@ describe('기본 서버', () => {
     assert.match(text, /skala_connections [1-9]/);
     assert.match(text, /skala_messages_in_total\{type="join"\} [1-9]/);
     assert.match(text, /# TYPE skala_messages_in_per_second gauge/);
+    assert.match(text, /skala_tick_ms\{q="0.95"\} [0-9.]+/);
+    assert.match(text, /skala_tick_ms\{q="max"\} [0-9.]+/);
+    assert.match(text, /skala_bytes_out_per_second [0-9]+/);
+    assert.match(text, /skala_bytes_out_per_player_per_second [0-9]+/);
+    assert.match(text, /skala_process_rss_bytes [1-9][0-9]*/);
+    assert.ok(h.live && h.live.tickMs.n > 0 && h.live.tickMs.p95 >= h.live.tickMs.p50 && h.live.tickMs.max >= h.live.tickMs.p95, 'healthz.live 틱 분위수');
+    assert.ok(h.live.rssMb > 0);
     assert.equal((await fetch(`${server.httpUrl}/nope`)).status, 404);
     await c.close();
   });
@@ -119,11 +126,21 @@ describe('기본 서버', () => {
     assert.equal(c.find((m) => m.t === 'error').code, 'policy');
   });
 
-  test('버전이 다르면 bad_version(4002)', async () => {
+  test('버전이 다르면 bad_version(4002): 새로고침 안내와 서버 판을 보내고 방은 만들지 않는다', async () => {
     const c = track(await open(server.roomUrl('v')));
-    c.ws.send(JSON.stringify({ t: 'join', v: PROTOCOL + 1 }));
+    c.ws.send(JSON.stringify({ t: 'join', v: PROTOCOL - 1 }));
     assert.equal((await c.closed).code, CLOSE.BAD_VERSION);
-    assert.equal(c.find((m) => m.t === 'error').code, 'bad_version');
+    const e = c.find((m) => m.t === 'error');
+    assert.equal(e.code, 'bad_version');
+    assert.equal(e.reload, true);
+    assert.equal(e.message, RELOAD_MESSAGE);
+    assert.equal(e.server, PROTOCOL);
+    assert.equal(e.client, PROTOCOL - 1);
+    assert.equal(server.rooms.has('v'), false);
+    const fake = createFakeClient({ url: server.url, room: 'v2', behavior: 'idle', version: 1 });
+    await assert.rejects(fake.ready);
+    assert.equal(fake.error.reload, true, '가짜 클라이언트도 이유를 받는다');
+    await fake.close();
   });
 
   test('나가면 남은 사람에게 leave가 가고, 빈 방은 지운다', async () => {

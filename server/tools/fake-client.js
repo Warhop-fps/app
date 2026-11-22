@@ -36,7 +36,9 @@ const EYE = 1.6, CROUCH_EYE = 1.1;
  * @param {string} o.room 방 id(소문자·숫자 1~16자)
  * @param {string} [o.name]
  * @param {'owner'|'charterer'|null} [o.team]
- * @param {object} [o.opts] 방을 만들 때의 { map, mode, ruleset }
+ * @param {object} [o.opts] 방을 만들 때의 { map, mode, ruleset, killTarget }
+ * @param {boolean} [o.quickRespawn=false] 개인전에서 죽으면 바로 respawn(E)을 보낸다
+ * @param {number} [o.version] join에 싣는 판(기본 PROTOCOL. 버전 거절 시험용)
  * @param {'fight'|'strafe'|'idle'|'manual'} [o.behavior='fight']
  * @param {number} [o.latencyMs=0] 한쪽 지연(보낼 때와 받을 때 각각 더한다)
  * @param {number} [o.jitterMs=0] 지연에 더하는 무작위 폭
@@ -49,7 +51,7 @@ const EYE = 1.6, CROUCH_EYE = 1.1;
 export function createFakeClient(o) {
   const {
     url, room, name = 'bot', team = null, opts = undefined, behavior = 'fight', latencyMs = 0, jitterMs = 0,
-    interpMs = 100, engageDist = 9, burst = [3, 6], strafeTicks = 30, wsOptions = undefined
+    interpMs = 100, engageDist = 9, burst = [3, 6], strafeTicks = 30, wsOptions = undefined, quickRespawn = false, version = PROTOCOL
   } = o;
   const [burstOn, burstOff] = burst;
   const ws = new WebSocket(`${url}/room/${room}`, wsOptions);
@@ -59,7 +61,8 @@ export function createFakeClient(o) {
   const s = {
     id: null, team, hz: 30, tickMs: 1000 / 30, phase: null, round: 0, leader: null, me: null, meExtra: null,
     latestTick: -1, latestAt: 0, match: null, error: null, closeInfo: null,
-    shots: 0, hits: 0, damage: 0, kills: 0, deaths: 0, rewindSum: 0, rewindN: 0, acked: -1
+    shots: 0, hits: 0, damage: 0, kills: 0, deaths: 0, rewindSum: 0, rewindN: 0, acked: -1,
+    killTarget: null, reward: null, quick: 0, respawnAsked: false, rejects: []
   };
   let seq = 0;
   let manualInput = { keys: 0, press: 0, slot: 0, yaw: 0, pitch: 0, viewTick: undefined };
@@ -86,7 +89,7 @@ export function createFakeClient(o) {
   }
 
   ws.on('open', () => {
-    send({ t: 'join', v: PROTOCOL, name, team, opts });
+    send({ t: 'join', v: version, name, team, opts });
   });
   ws.on('message', (data) => {
     const text = data.toString('utf8');
@@ -120,6 +123,7 @@ export function createFakeClient(o) {
         s.hz = m.hz;
         s.tickMs = 1000 / m.hz;
         s.leader = m.leader;
+        s.killTarget = m.killTarget ?? null;
         startPump();
         resolveReady(m);
         break;
@@ -169,6 +173,11 @@ export function createFakeClient(o) {
         if (ev.killer === s.id && ev.victim !== s.id) s.kills++;
         if (ev.victim === s.id) s.deaths++;
         break;
+      case 'spawn':
+        if (ev.id === s.id) { s.respawnAsked = false; if (ev.instant) s.quick++; }
+        break;
+      case 'reward': if (ev.id === s.id) s.reward = ev; break;
+      case 'reject': s.rejects.push(ev); if (ev.action === 'respawnNow') s.respawnAsked = false; break;
       case 'matchEnd': resolveEnd(ev); break;
       default: break;
     }
@@ -240,6 +249,11 @@ export function createFakeClient(o) {
   }
 
   function sendInput() {
+    // 개인전 즉시 부활: 죽어 있으면 한 번만 청한다(출격하거나 거절되면 다시 청할 수 있다)
+    if (quickRespawn && s.phase === 'live' && s.me && !s.me.alive && !s.respawnAsked && s.match && s.match.mo === 'ffa') {
+      s.respawnAsked = true;
+      send({ t: 'respawn' });
+    }
     const inp = decide();
     const msg = {
       t: 'input', seq: seq++, keys: inp.keys | 0, press: inp.press | 0, slot: inp.slot | 0,
@@ -309,12 +323,17 @@ export function createFakeClient(o) {
     get error() { return s.error; },
     get closeInfo() { return s.closeInfo; },
     get acked() { return s.acked; },
+    get killTarget() { return s.killTarget; },
+    get reward() { return s.reward; },
+    get quick() { return s.quick; },
+    get rejects() { return s.rejects; },
     get sentInputs() { return seq; },
     get tickMs() { return s.tickMs; },
     view,
     renderTick: () => { const at = renderMs(); return at == null ? null : at / s.tickMs; },
     start: () => send({ t: 'start' }),
     pick: (weapon) => send({ t: 'pick', weapon }),
+    respawn: () => send({ t: 'respawn' }),
     setTeam: (t) => send({ t: 'team', team: t }),
     /** 원시 메시지(시험용). 지연 길을 그대로 탄다 */
     sendRaw: (text) => send(text),

@@ -9,7 +9,8 @@
  * 전송: 텍스트 프레임 하나에 JSON 객체 하나. 필드 t가 형식이다. 자세한 표는 docs/SERVER.md 3절.
  *
  * 클라이언트 → 서버
- *   join  { t:'join', v, name, team?, opts?:{ map, mode, ruleset } }   접속 후 한 번. opts는 방을 처음 만들 때만 쓴다
+ *   join  { t:'join', v, name, team?, opts?:{ map, mode, ruleset, killTarget } }   접속 후 한 번. opts는 방을 처음 만들 때만 쓴다
+ *           v가 서버의 PROTOCOL과 다르면 error { code:'bad_version', reload:true, server }를 보내고 4002로 끊는다(화면은 "새로고침 필요")
  *   input { t:'input', seq, keys, press?, yaw, pitch, slot?, viewTick? }   입력 하나 = 서버 틱 하나(1/30초)
  *           seq 입력 번호(0..MAX_SEQ, 늘어나기만 한다)   keys 누르고 있는 키(KEY 비트)   press 이번 입력 사이에 새로 누른 키(PRESS 비트)
  *           yaw·pitch 시점(rad, pitch는 ±89°로 자른다)   slot 이번에 고른 무기 칸(1~4, 없으면 0)
@@ -17,20 +18,26 @@
  *   pick  { t:'pick', weapon }   라운드 전 무기 선택(match.setLoadout)
  *   team  { t:'team', team }     대기실에서 팀 바꾸기
  *   start { t:'start' }          방장(가장 먼저 들어온 사람)만
+ *   respawn { t:'respawn' }      개인전 즉시 부활(죽어서 기다리는 동안 E). 서버가 match.respawnNow로 판정하고 값(킬 보상 한 번)을 센다
  *
  * 서버 → 클라이언트
- *   welcome { t:'welcome', v, playerId, team, room, hz, tick, map, mode, ruleset, leader, maxRewindMs, row }
+ *   welcome { t:'welcome', v, playerId, team, room, hz, tick, map, mode, ruleset, killTarget, leader, maxRewindMs, row }
  *   snap    { t:'snap', tick, players:[줄...], me:{...} }   틱마다. 줄 = ROW 순서의 배열, me = 받는 사람만의 상태
  *   events  { t:'events', tick, events:[...] }            경기 이벤트(match.js) + 사격·수류탄 연출 이벤트
  *   match   { t:'match', tick, match, leader, ping }       점수판(match.snapshot()). 이벤트가 있을 때와 0.5초마다
- *   error   { t:'error', code, message }                  끊기 직전의 이유
+ *   error   { t:'error', code, message, reload?, server? } 끊기 직전의 이유. reload:true면 클라이언트를 새로고침해야 한다(버전이 다르다)
+ *   경기 끝 보상은 events 안의 { type:'reward', id, summary, reward, quick } 로 그 사람에게만 간다(account.recordMatch의 모양)
  */
 import { wrapAngle } from '../../js/engine/interp.js';
 import { FLAG } from '../../js/game/protocol.js';
+import { parseKillTarget } from '../../js/game/modes.js';
 
 export { FLAG };
 
-export const PROTOCOL = 1;
+/** 메시지 형식 판. 형식을 바꾸면 올린다(옛 클라이언트는 join에서 bad_version을 받고 새로고침 안내를 띄운다) */
+export const PROTOCOL = 2;
+/** 버전이 다를 때 화면에 띄울 말 */
+export const RELOAD_MESSAGE = '새로고침 필요';
 
 /** 누르고 있는 키(input.keys) */
 export const KEY = Object.freeze({
@@ -53,7 +60,7 @@ const TEAMS = Object.freeze(['owner', 'charterer']);
 const MODES = Object.freeze(['team', 'ffa']);
 
 /** 클라이언트가 보낼 수 있는 형식. 이 밖의 t는 버린다 */
-export const CLIENT_TYPES = Object.freeze(['join', 'input', 'pick', 'team', 'start']);
+export const CLIENT_TYPES = Object.freeze(['join', 'input', 'pick', 'team', 'start', 'respawn']);
 
 /** 끊을 때 쓰는 닫기 코드. 1xxx는 WebSocket 표준, 4xxx는 이 서버가 정한 값 */
 export const CLOSE = Object.freeze({
@@ -112,11 +119,12 @@ export function cleanName(v) {
 }
 
 function cleanOpts(o) {
-  const out = { map: null, mode: null, ruleset: null };
+  const out = { map: null, mode: null, ruleset: null, killTarget: null };
   if (!o || typeof o !== 'object' || Array.isArray(o)) return out;
   if (typeof o.map === 'string' && OPT_RE.test(o.map)) out.map = o.map;
   if (typeof o.mode === 'string' && MODES.includes(o.mode)) out.mode = o.mode;
   if (typeof o.ruleset === 'string' && OPT_RE.test(o.ruleset)) out.ruleset = o.ruleset;
+  if (o.killTarget !== undefined && o.killTarget !== null) out.killTarget = parseKillTarget(o.killTarget);   // 5~20으로 자른다(modes.FFA_KILLS)
   return out;
 }
 
@@ -152,6 +160,9 @@ const DECODERS = Object.freeze(Object.assign(Object.create(null), {
   },
   start() {
     return { t: 'start' };
+  },
+  respawn() {
+    return { t: 'respawn' };
   }
 }));
 
@@ -170,6 +181,11 @@ export function decodeClient(text) {
 }
 
 /** 끊기 직전에 보내는 이유 */
-export function encodeError(code, message = '') {
-  return JSON.stringify({ t: 'error', code, message });
+export function encodeError(code, message = '', extra = null) {
+  return JSON.stringify({ t: 'error', code, message, ...(extra && typeof extra === 'object' ? extra : {}) });
+}
+
+/** 버전이 다를 때의 error 메시지. 클라이언트는 reload를 보고 "새로고침 필요"를 띄운다 */
+export function encodeVersionError(clientV) {
+  return encodeError('bad_version', RELOAD_MESSAGE, { reload: true, server: PROTOCOL, client: Number.isInteger(clientV) ? clientV : null });
 }

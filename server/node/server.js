@@ -23,12 +23,13 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { RULESET_IDS } from '../../js/game/modes.js';
 import { TokenBucket, createStrikes } from '../core/limits.js';
 import { MAP_CHOICES } from '../core/maps.js';
-import { CLOSE, PROTOCOL, decodeClient, encodeError, roomIdFromPath } from '../core/protocol.js';
+import { CLOSE, PROTOCOL, decodeClient, encodeError, encodeVersionError, roomIdFromPath } from '../core/protocol.js';
 import { createRoom } from '../core/room.js';
 import { DEFAULTS } from './config.js';
 import { createLogger } from './log.js';
 import { createLoop } from './loop.js';
 import { createMetrics } from './metrics.js';
+import { createProcessStats, createRate, createSampler } from './rolling.js';
 
 export const SERVER_VERSION = '0.1.0';
 
@@ -69,6 +70,12 @@ export async function startServer(options = {}) {
   let roomWin = new Map();
   let lastWindow = null;
 
+  // 최근 값: 틱 시간 분위수(최근 30초 = 900틱), 초당 바이트·메시지(최근 10초), 프로세스 CPU·메모리(1초 간격)
+  const tickSamples = createSampler(cfg.hz * 30);
+  const rate = createRate({ windowSec: 10 });
+  const proc = createProcessStats();
+  const totals = { bytesOut: 0, msgOut: 0, msgIn: 0 };
+
   const metrics = createMetrics();
   metrics.declare('skala_connections', 'gauge', '열린 WebSocket 접속 수');
   metrics.declare('skala_rooms', 'gauge', '열린 방 수');
@@ -85,6 +92,12 @@ export async function startServer(options = {}) {
   metrics.declare('skala_handshake_rejected_total', 'counter', '거절한 WebSocket 업그레이드(이유별)');
   metrics.declare('skala_disconnects_total', 'counter', '서버가 끊은 접속(이유별)');
   metrics.declare('skala_room_errors_total', 'counter', '오류로 닫은 방');
+  metrics.declare('skala_tick_ms', 'gauge', '최근 30초 틱 하나(모든 방)의 계산 시간 분위수(ms). q = 0.5, 0.95, max');
+  metrics.declare('skala_bytes_out_per_second', 'gauge', '최근 10초의 초당 보낸 바이트');
+  metrics.declare('skala_bytes_out_per_player_per_second', 'gauge', '최근 10초의 사람 한 명당 초당 보낸 바이트');
+  metrics.declare('skala_process_cpu_percent', 'gauge', '프로세스 CPU 사용률(한 코어 = 100)');
+  metrics.declare('skala_process_rss_bytes', 'gauge', '프로세스 상주 메모리(바이트)');
+  metrics.declare('skala_process_heap_used_bytes', 'gauge', 'V8 힙 사용량(바이트)');
   metrics.histogram('skala_tick_duration_ms', '모든 방의 틱 하나를 계산한 시간(ms)', [0.25, 0.5, 1, 2, 5, 10, 20, 33]);
 
   const ipTag = (ip) => createHash('sha256').update(ipSalt).update(String(ip)).digest('hex').slice(0, 12);
@@ -104,10 +117,23 @@ export async function startServer(options = {}) {
     for (const r of rooms.values()) n += r.size;
     return n;
   }
+  /** 최근 값(틱 분위수·초당 바이트·CPU·메모리). /healthz의 live와 /metrics가 같은 값을 쓴다 */
+  function live() {
+    const t = tickSamples.summary();
+    const players = playerCount();
+    const bps = rate.perSec('bytesOut');
+    const p = proc.read();
+    return {
+      tickMs: { p50: round3(t.p50), p95: round3(t.p95), max: round3(t.max), n: t.n },
+      bytesOutPerSec: Math.round(bps), bytesOutPerPlayerPerSec: players ? Math.round(bps / players) : 0,
+      msgOutPerSec: round1(rate.perSec('msgOut')), msgInPerSec: round1(rate.perSec('msgIn')),
+      cpuPercent: round1(p.cpuPercent), rssMb: round1(p.rssBytes / 1048576), heapMb: round1(p.heapUsedBytes / 1048576)
+    };
+  }
   function stats() {
     return {
       ok: !closing, version: SERVER_VERSION, protocol: PROTOCOL, uptimeSec: Math.round((Date.now() - startedAt) / 1000),
-      hz: cfg.hz, ticks: loop.ticks, rooms: rooms.size, players: playerCount(), connections: conns.size, window: lastWindow
+      hz: cfg.hz, ticks: loop.ticks, rooms: rooms.size, players: playerCount(), connections: conns.size, live: live(), window: lastWindow
     };
   }
   function onHttp(req, res) {
@@ -122,6 +148,15 @@ export async function startServer(options = {}) {
       metrics.set('skala_connections', null, conns.size);
       metrics.set('skala_rooms', null, rooms.size);
       metrics.set('skala_players', null, playerCount());
+      const l = live();
+      metrics.set('skala_tick_ms', { q: '0.5' }, l.tickMs.p50);
+      metrics.set('skala_tick_ms', { q: '0.95' }, l.tickMs.p95);
+      metrics.set('skala_tick_ms', { q: 'max' }, l.tickMs.max);
+      metrics.set('skala_bytes_out_per_second', null, l.bytesOutPerSec);
+      metrics.set('skala_bytes_out_per_player_per_second', null, l.bytesOutPerPlayerPerSec);
+      metrics.set('skala_process_cpu_percent', null, l.cpuPercent);
+      metrics.set('skala_process_rss_bytes', null, Math.round(l.rssMb * 1048576));
+      metrics.set('skala_process_heap_used_bytes', null, Math.round(l.heapMb * 1048576));
       res.writeHead(200, { ...headers, 'content-type': 'text/plain; version=0.0.4; charset=utf-8' });
       res.end(metrics.render());
       return;
@@ -174,6 +209,8 @@ export async function startServer(options = {}) {
     metrics.inc('skala_bytes_out_total', null, bytes);
     win.msgOut++;
     win.bytesOut += bytes;
+    totals.msgOut++;
+    totals.bytesOut += bytes;
     if (conn.room) { const rw = roomWinOf(conn.room.id); rw.msgOut++; rw.bytesOut += bytes; }
   }
 
@@ -192,14 +229,14 @@ export async function startServer(options = {}) {
   }
 
   /** 이유를 보내고 닫는다. 방에서 빼는 일은 지금 돌고 있는 틱이 끝난 뒤에 한다(틱 도중에 사람 목록이 바뀌지 않게) */
-  function drop(conn, code, reason, message = '') {
+  function drop(conn, code, reason, message = '', text = null) {
     if (conn.closed) return;
     conn.closed = true;
     clearTimeout(conn.joinTimer);
     metrics.inc('skala_disconnects_total', { reason });
     try {
       if (conn.ws.readyState === WebSocket.OPEN) {
-        conn.ws.send(encodeError(reason, message));
+        conn.ws.send(text || encodeError(reason, message));
         conn.ws.close(code, reason);
       }
     } catch { /* 이미 닫히는 중 */ }
@@ -256,6 +293,7 @@ export async function startServer(options = {}) {
     const msg = res.msg;
     metrics.inc('skala_messages_in_total', { type: msg.t });
     win.msgIn++;
+    totals.msgIn++;
     if (msg.t === 'join') return onJoin(conn, msg);
     if (!conn.room) return strike(conn, 1, 'not_joined');
     roomWinOf(conn.room.id).msgIn++;
@@ -266,13 +304,15 @@ export async function startServer(options = {}) {
     return {
       map: opts.map && MAP_CHOICES.includes(opts.map) ? opts.map : cfg.defaultMap,
       mode: opts.mode || cfg.defaultMode,
-      ruleset: opts.ruleset && RULESET_IDS.includes(opts.ruleset) ? opts.ruleset : cfg.defaultRuleset
+      ruleset: opts.ruleset && RULESET_IDS.includes(opts.ruleset) ? opts.ruleset : cfg.defaultRuleset,
+      killTarget: opts.killTarget ?? cfg.defaultKillTarget
     };
   }
 
   function onJoin(conn, msg) {
     if (conn.room) return strike(conn, 1, 'double_join');
-    if (msg.v !== PROTOCOL) return drop(conn, CLOSE.BAD_VERSION, 'bad_version', `server protocol ${PROTOCOL}`);
+    // 판이 다르면 이유(새로고침 필요)를 보내고 끊는다. 옛 클라이언트가 모르는 메시지를 받고 엉뚱하게 움직이지 않게 방에는 넣지 않는다
+    if (msg.v !== PROTOCOL) return drop(conn, CLOSE.BAD_VERSION, 'bad_version', '', encodeVersionError(msg.v));
     const roomId = conn.roomId;
     let room = rooms.get(roomId);
     if (!room) {
@@ -283,7 +323,7 @@ export async function startServer(options = {}) {
       room = createRoom({
         send: (pid, text) => { const c = byPlayer.get(pid); if (c) sendTo(c, text); },
         rttOf: (pid) => { const c = byPlayer.get(pid); return c ? c.rtt : null; },
-        id: roomId, ...opts, hz: cfg.hz, substeps: cfg.substeps, roomSize: cfg.roomSize, maxRewindMs: cfg.maxRewindMs,
+        id: roomId, ...opts, hz: cfg.hz, substeps: cfg.substeps, roomSize: opts.mode === 'ffa' ? cfg.ffaRoomSize : cfg.roomSize, maxRewindMs: cfg.maxRewindMs,
         historyTicks: cfg.historyTicks, snapshotEvery: cfg.snapshotEvery, matchEvery: cfg.matchEvery, rules: cfg.matchRules,
         rng: mulberry32(Math.floor(master() * 0xffffffff)), log, onEmpty: () => closeRoom(roomId, 'empty')
       });
@@ -341,6 +381,7 @@ export async function startServer(options = {}) {
     }
     const ms = performance.now() - t0;
     metrics.observe('skala_tick_duration_ms', ms);
+    tickSamples.add(ms);
     metrics.inc('skala_ticks_total');
     win.tickMs += ms;
     win.ticks++;
@@ -395,6 +436,9 @@ export async function startServer(options = {}) {
     }
   }, cfg.pingIntervalMs);
   const statsTimer = setInterval(reportStats, cfg.statsIntervalMs);
+  rate.mark(totals);
+  const sampleTimer = setInterval(() => { rate.mark(totals); proc.sample(); }, 1000);
+  sampleTimer.unref();
 
   await new Promise((resolve, reject) => {
     httpServer.once('error', reject);
@@ -411,6 +455,7 @@ export async function startServer(options = {}) {
     loop.stop();
     clearInterval(heartbeat);
     clearInterval(statsTimer);
+    clearInterval(sampleTimer);
     const open = [...conns];
     for (const conn of open) drop(conn, CLOSE.GOING_AWAY, 'server_shutdown');
     // 닫기 인사를 잠깐 기다렸다가 남은 소켓은 끊는다

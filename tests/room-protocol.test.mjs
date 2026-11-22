@@ -7,7 +7,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  CLIENT_TYPES, KEY_MASK, MAX_SEQ, PRESS_MASK, PROTOCOL, ROW, cleanName, decodeClient, decodeRow, encodeRow, roomIdFromPath
+  CLIENT_TYPES, KEY_MASK, MAX_SEQ, PRESS_MASK, PROTOCOL, RELOAD_MESSAGE, ROW, cleanName, decodeClient, decodeRow, encodeRow, encodeVersionError, roomIdFromPath
 } from '../server/core/protocol.js';
 import { TokenBucket, createStrikes } from '../server/core/limits.js';
 
@@ -17,7 +17,28 @@ describe('decodeClient', () => {
   test('join: 이름을 정리하고 모르는 팀·옵션은 버린다(방 id는 주소가 정한다)', () => {
     const r = decodeClient(enc({ t: 'join', v: PROTOCOL, room: 'ignored', name: '  철수‮\u0007 ', team: 'blue', opts: { map: 'arena', mode: 'ffa', ruleset: 'knife', x: 1 } }));
     assert.equal(r.ok, true);
-    assert.deepEqual(r.msg, { t: 'join', v: PROTOCOL, name: '철수', team: null, opts: { map: 'arena', mode: 'ffa', ruleset: 'knife' } });
+    assert.deepEqual(r.msg, { t: 'join', v: PROTOCOL, name: '철수', team: null, opts: { map: 'arena', mode: 'ffa', ruleset: 'knife', killTarget: null } });
+  });
+
+  test('join: 개인전 목표 킬은 5~20으로 자르고, 숫자가 아니면 없는 것으로 본다', () => {
+    const kt = (v) => decodeClient(enc({ t: 'join', v: PROTOCOL, opts: { mode: 'ffa', killTarget: v } })).msg.opts.killTarget;
+    assert.equal(kt(10), 10);
+    assert.equal(kt(2), 5);
+    assert.equal(kt(99), 20);
+    assert.equal(kt('15'), 15);
+    assert.equal(kt('abc'), null);
+    assert.equal(kt({}), null);
+  });
+
+  test('respawn은 덧붙은 칸을 버리고 형식만 남긴다', () => {
+    assert.deepEqual(decodeClient(enc({ t: 'respawn', id: 'p9' })).msg, { t: 'respawn' });
+  });
+
+  test('버전이 다를 때의 오류는 새로고침 안내와 서버 판을 싣는다', () => {
+    const e = JSON.parse(encodeVersionError(1));
+    assert.deepEqual(e, { t: 'error', code: 'bad_version', message: RELOAD_MESSAGE, reload: true, server: PROTOCOL, client: 1 });
+    assert.equal(RELOAD_MESSAGE, '새로고침 필요');
+    assert.equal(JSON.parse(encodeVersionError('x')).client, null);
   });
 
   test('join: 버전은 정수여야 한다(다른 버전은 형식은 맞고 어댑터가 bad_version으로 끊는다)', () => {
@@ -57,7 +78,7 @@ describe('decodeClient', () => {
     assert.equal(decodeClient('{oops').reason, 'bad_json');
     assert.equal(decodeClient('[1,2]').reason, 'bad_shape');
     assert.equal(decodeClient('null').reason, 'bad_shape');
-    assert.deepEqual(CLIENT_TYPES, ['join', 'input', 'pick', 'team', 'start']);
+    assert.deepEqual(CLIENT_TYPES, ['join', 'input', 'pick', 'team', 'start', 'respawn']);
   });
 
   test('pick·team·start', () => {
