@@ -7,7 +7,7 @@
  *          내가 준 피해 숫자(머리는 크고 노랗게, 몸은 작게)를 띄운다. 내 사격·칼·수류탄이 맞힌 좀비를 찾는다(World가 부른다). 모형은 상자 몇 개로 직접 만들었다.
  *          칼의 검기(빛나는 초승달)를 날려 내 검기가 지나간 좀비를 알리고, 쓰러진 동료 자리에 고리와 벽 너머로 보이는 이름표를 띄운다.
  */
-import { ZF, BOSS_CODE_BASE, FIELD_KINDS } from './director.js';
+import { ZF, BOSS_CODE_BASE, FIELD_KINDS } from './wire.js';
 import { zombieByCode, HORDE, LOOT_TYPES } from './rules.js';
 import { bossByCode, SKILL_KINDS, HAZARD_KINDS, PROJECTILE_KINDS } from './bosses.js';
 import { waveHitT, waveHitPoint, losReach } from './contact.js';

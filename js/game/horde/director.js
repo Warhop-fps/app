@@ -28,31 +28,24 @@
  */
 import { moveCharacter, lineOfSight, getGroundY, raycastWorld } from '../../engine/physics.js';
 import { PLAYER } from '../../core/consts.js';
-import { computeDamage, getDef, explosionFalloff } from '../../weapons/defs.js';
+import { getDef, explosionFalloff } from '../../weapons/defs.js';
 import {
-  HORDE, ZOMBIE_TYPES, zombieByCode, zombieCount, hpMul, dmgMul, speedMul, spawnGapMs, spawnBurst, bossCount, bossHpMul,
-  zombieMix, makeRng, hashSeed, pickWeighted, LOOT_TYPES, lootByCode, rollDrop, zombieXp, xpNeed, timeBonusXp, frostSlowMs
+  HORDE, ZOMBIE_TYPES, zombieCount, hpMul, dmgMul, speedMul, spawnGapMs, spawnBurst, bossCount, bossHpMul,
+  zombieMix, makeRng, hashSeed, pickWeighted, LOOT_TYPES, rollDrop, zombieXp, xpNeed, timeBonusXp, frostSlowMs
 } from './rules.js';
-import { computePerks, perkMaxHp, makeOffer, encodeCards, decodeCards, cardById } from './cards.js';
-import { BOSSES, bossById, bossByCode, pickBosses, SKILL_KINDS, HAZARD_KINDS, PROJECTILE_KINDS } from './bosses.js';
+import { computePerks, perkMaxHp, makeOffer, encodeCards, cardById } from './cards.js';
+import { BOSSES, bossById, pickBosses, SKILL_KINDS, HAZARD_KINDS, PROJECTILE_KINDS } from './bosses.js';
+import { BLAST_MUL, targetDamageMul, nadeDamage, zombieHitDamage } from './damage.js';
+import {
+  HORDE_SNAPSHOT_VERSION, HORDE_PHASES, PHASE_CODE, ZF, FIELD_KINDS, BOSS_CODE_BASE, zombieIdOf, isZombieId, applyHordeSnapshot, hordeSummary
+} from './wire.js';
 
-export const HORDE_SNAPSHOT_VERSION = 2;
-/** 단계(스냅샷 zp). 'cards' = 증강을 고르는 동안(좀비·스테이지 시간이 멈춘다). 'break'는 예전 쉬는 시간 자리라 쓰지 않는다 */
-export const HORDE_PHASES = Object.freeze(['warmup', 'prep', 'wave', 'cards', 'break', 'over']);
-const PHASE_CODE = Object.freeze({ warmup: 0, prep: 1, wave: 2, cards: 3, break: 4, over: 5 });
-/** 좀비 행의 깃발 비트 */
-export const ZF = Object.freeze({ dead: 1, wind: 2, rise: 4, slow: 8, haste: 16, armor: 32, rage: 64, air: 128, frozen: 256, hook: 512 });
-/** 사람이 만든 장판 종류(스냅샷 af) */
-export const FIELD_KINDS = Object.freeze({ fire: 1 });
 const DECOY_PREFIX = '#d';        // 분신 표적 번호(사람 id와 겹치지 않게)
-const BOSS_CODE_BASE = 100;       // 좀비 행의 종류 번호가 이 값 이상이면 보스(100 + 보스 번호)
 const DEAD_KEEP_MS = 1400;        // 쓰러진 좀비를 화면이 쓰러지는 모습을 그리도록 남겨 두는 시간
 const FX_KEEP_MS = 700;           // 폭발 표시를 스냅샷에 남겨 두는 시간
 const HURT_KEEP_MS = 900;         // 사람이 맞은 방향 표시를 남겨 두는 시간
 const PLAYER_R = 0.35;
 const EYE = 1.6;
-const PIERCE_FALLOFF = 0.7;
-const PIERCE_MIN = 0.3;           // 무제한 관통에서도 이만큼은 남는다(뚫을 때마다 70%, 최소 30%)
 const GUARD_COS = 0.34;           // 방패: 바라보는 방향에서 이 각(약 70°) 안의 공격만 막는다
 const DODGE_CAP = 0.9;            // 회피 확률 상한
 const REDUCE_CAP = 0.9;           // 받는 피해 감소(방어·방패를 합친 값) 상한
@@ -96,7 +89,6 @@ const SWORD_WAVE_SLOW_MUL = 0.5;   // 느려지는 동안의 이동 속도 배�
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const num = (v, d = 0) => (Number.isFinite(+v) && v !== null && v !== '' ? +v : d);
 const cm = (v) => Math.round(num(v) * 100);
-const fromCm = (v) => num(v) / 100;
 const hyp2 = (dx, dz) => Math.sqrt(dx * dx + dz * dz);
 function pos3(p) {
   if (!p) return null;
@@ -104,14 +96,6 @@ function pos3(p) {
   return Number.isFinite(+p.x) && Number.isFinite(+p.z) ? [+p.x, num(p.y), +p.z] : null;
 }
 const zid = (n) => 'z' + n;
-/** 'z12' → 12, 그 밖은 0 */
-export function zombieIdOf(v) {
-  const s = String(v == null ? '' : v);
-  if (s.length < 2 || s.length > 9 || s[0] !== 'z') return 0;
-  const n = Number(s.slice(1));
-  return Number.isInteger(n) && n > 0 ? n : 0;
-}
-const isZombieId = (v) => zombieIdOf(v) > 0;
 
 /**
  * @param {object} o
@@ -1579,6 +1563,8 @@ export function createHorde(o = {}) {
   function stepProjectiles(dt, ev) {
     const bounced = [];
     for (let i = projectiles.length - 1; i >= 0; i--) {
+      // 투사체에 마지막 사람이 쓰러지면 gameOver가 목록을 비운다. 남은 번호를 읽지 않고 멈춘다(예전에는 여기서 TypeError로 틱이 끊겼다)
+      if (S.phase === 'over') return;
       const pr = projectiles[i];
       const p0 = pr.pos.slice();
       if (pr.arc) pr.vel[1] += GRAVITY * dt;
@@ -1633,6 +1619,8 @@ export function createHorde(o = {}) {
   }
   function stepHazards(dt, ev) {
     for (let i = hazards.length - 1; i >= 0; i--) {
+      // 장판에 마지막 사람이 쓰러지면 gameOver가 목록을 비운다. 남은 번호를 읽지 않고 멈춘다(예전에는 여기서 TypeError로 틱이 끊겼다)
+      if (S.phase === 'over') return;
       const h = hazards[i];
       if (S.clock >= h.until) { hazards.splice(i, 1); continue; }
       if (!(h.dps > 0)) continue;
@@ -2223,95 +2211,6 @@ export function createHorde(o = {}) {
   };
 }
 
-/* ====================================================================== 화면용 풀기 */
-
-/** 스냅샷 → 화면용 뷰. 형식이 틀리면 null(던지지 않는다) */
-export function applyHordeSnapshot(s) {
-  if (!s || typeof s !== 'object' || s.v !== HORDE_SNAPSHOT_VERSION || !Array.isArray(s.p) || !Array.isArray(s.z)) return null;
-  const phase = HORDE_PHASES[s.zp | 0] || 'warmup';
-  const players = [];
-  // 살리는 사람 번호는 p 줄의 순서다(틀린 줄을 건너뛰어도 어긋나지 않게 원래 줄로 찾는다)
-  const rowIds = s.p.map((r) => (Array.isArray(r) ? String(r[0]) : null));
-  for (const r of s.p) {
-    if (!Array.isArray(r) || r.length < 12) continue;
-    const hurt = Array.isArray(r[16]) ? { x: fromCm(r[16][0]), z: fromCm(r[16][1]), ago: num(r[16][2]) } : null;
-    const kn = Array.isArray(r[22]) ? r[22] : null;
-    const dn = Array.isArray(r[23]) ? r[23] : null;
-    const by = dn ? num(dn[4], -1) | 0 : -1;
-    players.push({
-      id: String(r[0]), name: String(r[1] || ''), hp: num(r[2]), maxHp: Math.max(1, num(r[3], 100)), alive: !!r[4], kills: num(r[5]) | 0,
-      connected: !!r[6], cards: decodeCards(r[7]), offer: decodeCards(r[8]), rerolls: num(r[9]) | 0, picked: !!r[10], downs: num(r[11]) | 0,
-      damage: num(r[12]) | 0, shield: num(r[13]) | 0, heads: num(r[14]) | 0, bossKills: num(r[15]) | 0, hurt, spawned: r[17] === undefined ? true : !!r[17],
-      picks: num(r[18]) | 0, chest: !!r[19], offerLeftMs: num(r[20]) | 0, invuln: num(r[21]) > 0, invulnMs: num(r[21]) | 0,
-      knock: kn ? { seq: num(kn[0]) | 0, v: [fromCm(kn[1]), fromCm(kn[2]), fromCm(kn[3])], ago: num(kn[4]) } : null,
-      down: dn ? { pos: [fromCm(dn[0]), fromCm(dn[1]), fromCm(dn[2])], progress: clamp(num(dn[3]) / 1000, 0, 1), by: by >= 0 && rowIds[by] ? rowIds[by] : null } : null,
-      burnMs: Math.max(0, num(r[24]) | 0), burnNextMs: Math.max(0, num(r[25]) | 0), noHealMs: Math.max(0, num(r[26]) | 0),
-      yasuoHits: Array.isArray(r[27]) ? clamp(num(r[27][0]) | 0, 0, 2) : 0,
-      yasuoStackMs: Array.isArray(r[27]) ? Math.max(0, num(r[27][1]) | 0) : 0,
-      yasuoLastShot: Array.isArray(r[27]) ? Math.max(0, num(r[27][2]) | 0) : 0,
-      yasuoLastAgo: Array.isArray(r[27]) ? Math.max(0, num(r[27][3]) | 0) : 0
-    });
-  }
-  const zombies = [];
-  for (const r of s.z) {
-    if (!Array.isArray(r) || r.length < 8) continue;
-    const code = num(r[1]) | 0;
-    const boss = code >= BOSS_CODE_BASE ? bossByCode(code - BOSS_CODE_BASE) : null;
-    const type = boss ? null : zombieByCode(code);
-    if (!boss && !type) continue;
-    const f = num(r[7]) | 0;
-    zombies.push({
-      id: num(r[0]) | 0, code, boss, type, pos: [fromCm(r[2]), fromCm(r[3]), fromCm(r[4])], yaw: num(r[5]) / 100,
-      hpFrac: clamp(num(r[6]) / 100, 0, 1), flags: f, dead: !!(f & ZF.dead)
-    });
-  }
-  const pids = players.map((p) => p.id);
-  const killers = new Map();
-  for (const r of Array.isArray(s.kz) ? s.kz : []) if (Array.isArray(r) && pids[r[1]]) killers.set(num(r[0]) | 0, pids[r[1]]);
-  for (const z of zombies) if (z.dead && killers.has(z.id)) z.killer = killers.get(z.id);
-  const bosses = [];
-  for (const r of Array.isArray(s.b) ? s.b : []) {
-    const def = Array.isArray(r) ? bossByCode(r[1]) : null;
-    if (!def) continue;
-    bosses.push({
-      id: num(r[0]) | 0, def, hp: num(r[2]), maxHp: Math.max(1, num(r[3], 1)), skill: num(r[4]) | 0, skillPhase: num(r[5]) | 0,
-      target: [fromCm(r[6]), fromCm(r[7])], skillLeftMs: num(r[8]), ringR: num(r[9]) / 100, enraged: !!r[10]
-    });
-  }
-  const projectiles = (Array.isArray(s.pr) ? s.pr : []).filter(Array.isArray).map((r) => ({
-    id: num(r[0]) | 0, kind: num(r[1]) | 0, pos: [fromCm(r[2]), fromCm(r[3]), fromCm(r[4])], vel: [fromCm(r[5]), fromCm(r[6]), fromCm(r[7])], arc: !!r[8], owner: num(r[9]) | 0
-  }));
-  const hazards = (Array.isArray(s.hz) ? s.hz : []).filter(Array.isArray).map((r) => ({
-    id: num(r[0]) | 0, kind: num(r[1]) | 0, pos: [fromCm(r[2]), fromCm(r[3]), fromCm(r[4])], r: fromCm(r[5]), leftMs: num(r[6]), ms: Math.max(1, num(r[7], 1))
-  }));
-  const fx = (Array.isArray(s.fx) ? s.fx : []).filter(Array.isArray).map((r) => ({
-    id: num(r[0]) | 0, kind: String(r[1] || ''), pos: [fromCm(r[2]), fromCm(r[3]), fromCm(r[4])], r: fromCm(r[5]), ago: num(r[6])
-  }));
-  const loot = [];
-  for (const r of Array.isArray(s.lt) ? s.lt : []) {
-    const def = Array.isArray(r) ? lootByCode(r[1]) : null;
-    if (!def) continue;
-    loot.push({ id: num(r[0]) | 0, kind: def.id, pos: [fromCm(r[2]), fromCm(r[3]), fromCm(r[4])], leftMs: Math.max(0, num(r[5]) * 100) });
-  }
-  const fields = (Array.isArray(s.af) ? s.af : []).filter(Array.isArray).map((r) => ({
-    id: num(r[0]) | 0, kind: num(r[1]) | 0, pos: [fromCm(r[2]), fromCm(r[3]), fromCm(r[4])], r: fromCm(r[5]), leftMs: num(r[6]), ms: Math.max(1, num(r[7], 1))
-  }));
-  const decoys = (Array.isArray(s.dc) ? s.dc : []).filter(Array.isArray).map((r) => ({
-    id: num(r[0]) | 0, pos: [fromCm(r[1]), fromCm(r[2]), fromCm(r[3])], hpFrac: clamp(num(r[4]) / 100, 0, 1), owner: players[num(r[5], -1)] ? players[num(r[5])].id : null, leftMs: num(r[6])
-  }));
-  const swordWaves = (Array.isArray(s.yt) ? s.yt : []).filter((r) => Array.isArray(r) && rowIds[r[0]]).map((r) => ({
-    owner: rowIds[r[0]], pos: [fromCm(r[1]), fromCm(r[2]), fromCm(r[3])], dir: [num(r[4]), 0, num(r[5])],
-    left: fromCm(r[6]), hit: Array.isArray(r[7]) ? r[7].map((id) => num(id) | 0) : [], bossDone: r[8] === 1
-  }));
-  const xa = Array.isArray(s.xp) ? s.xp : [1, 0, 10, 0];
-  return {
-    mode: 'zombie', phase, stage: num(s.st) | 0, firstStage: Math.max(1, num(s.fs, 1) | 0), timeLeftMs: s.tl == null ? null : num(s.tl), elapsedMs: num(s.el), seed: num(s.sd) >>> 0,
-    stageLeftMs: s.sl == null ? null : num(s.sl), xp: { level: Math.max(1, num(xa[0], 1) | 0), xp: num(xa[1]) | 0, need: Math.max(1, num(xa[2], 10) | 0), total: num(xa[3]) | 0 },
-    left: num(s.left) | 0, total: num(s.tot) | 0, killedStage: num(s.kd) | 0, recentBosses: Array.isArray(s.rb) ? s.rb.map(String) : [],
-    players, zombies, bosses, projectiles, hazards, fx, loot, fields, decoys, swordWaves, over: s.over && typeof s.over === 'object' ? { ...s.over } : null
-  };
-}
-
 /** 방장 이전: 스냅샷으로 새 방장의 시뮬레이션을 만든다 */
 export function restoreHorde(snapshot, opts = {}) {
   const view = applyHordeSnapshot(snapshot);
@@ -2320,68 +2219,8 @@ export function restoreHorde(snapshot, opts = {}) {
   return createHorde({ ...opts, players, seed: view.seed, restore: view, startStage: 1 });
 }
 
-/** 방장 화면 결과 요약(계정 기록용): 내 처치·헤드샷·도달 스테이지 */
-export function hordeSummary(view, meId) {
-  const me = view && view.players ? view.players.find((p) => p.id === meId) : null;
-  const over = (view && view.over) || {};
-  return {
-    stage: num(over.stage, view ? view.stage : 0) | 0, cleared: num(over.cleared, view ? Math.max(0, view.stage - view.firstStage) : 0) | 0, ms: num(over.ms, view ? view.elapsedMs : 0),
-    kills: me ? me.kills : 0, heads: me ? me.heads : 0, bossKills: me ? me.bossKills : 0, downs: me ? me.downs : 0, damage: me ? me.damage : 0,
-    cards: me ? me.cards.length : 0, level: view && view.xp ? view.xp.level : 1
-  };
-}
-
-/**
- * 폭발 종류별 배율: 손으로 던진 수류탄 10(폭심 기본 피해 1000), 유탄 발사기 1.2(여러 발), 바주카포 2.6(한 발씩), 말뚝건 4.5(반경 1.2 m 안 450),
- * 투척 도끼 7(뚫고 지나가며 닿은 좀비마다 700), 제우스의 번개 1.5(맞은 좀비와 튄 다섯 마리 모두 150)
- */
-export const BLAST_MUL = Object.freeze({ nade: 10, gl: 1.2, rocket: 2.6, stake: 4.5, axe: 7, bolt: 1.5 });
-
-/** 대상별 피해 배율: 보스 피해 증가와 일반 좀비 피해 감소를 같은 경로로 적용한다. */
-function targetDamageMul(k, boss) {
-  return boss ? 1 + ((k && k.boss) || 0) : 1 - Math.min(1, (k && k.normalPenalty) || 0);
-}
-
-/** 수류탄·발사체 폭발 피해(화면이 잰 피해 → 이 모드의 피해): 종류 배율 × 모든 피해 × 수류탄 피해(보스면 보스 피해도) */
-export function nadeDamage(dmg, k, boss = false, kind = null) {
-  const kk = k || {};
-  const base = BLAST_MUL[kind] || BLAST_MUL.nade;
-  const side = (kind === 'gl' || kind === 'rocket' || kind === 'stake') && (kk.sideMaster || 0) > 0 ? 6 : 1;   // 보조무기 마스터: 보조 발사기 피해 +500%
-  return clamp(num(dmg), 0, 100) * base * (1 + (kk.dmg || 0)) * (1 + (kk.nade || 0)) * targetDamageMul(kk, boss) * side;
-}
-
-/**
- * 좀비 한 발의 피해(치명타·좀비 방어 버프 빼고). 방장 판정(claimHit)과 화면의 피해 숫자가 같은 공식을 쓴다.
- * c = { weaponId, part, dist, kind, count }, k = 쏜 사람의 능력치(computePerks), z = { boss, hpFrac }, o = { myHpFrac, nth(관통 순서), air(점프로 떠 있는가) }
- * kind: 'stab'·'waveStab'(찌르기의 검기)은 찌르기 피해, 'slash'·'wave'(베기의 검기)는 베기 피해. 검기도 칼 피해라 칼 증강이 붙는다
- * → { dmg, head, melee, part } | null(쓸 수 없는 무기)
- */
-export function zombieHitDamage(c = {}, k = {}, z = {}, o = {}) {
-  const def = getDef(c.weaponId);
-  if (!def || def.explosion) return null;
-  const melee = !!def.melee;
-  let part = String(c.part || 'body');
-  if (part === 'hand') part = 'body';
-  else if (part === 'foot') part = 'legs';
-  const dist = Math.max(0, num(c.dist));
-  const count = clamp(num(c.count, 1) | 0, 1, Math.max(1, def.pellets || 1));
-  const stab = c.kind === 'stab' || c.kind === 'waveStab';
-  let base = computeDamage(def.id, part, dist, stab ? 'stab' : 'slash', count);
-  // 보스 머리는 몸 피해의 2.2배까지만(라이플 머리 110이 보스를 몇 초 만에 녹이지 않게)
-  if (z.boss && part === 'head' && !melee) base = Math.min(base, computeDamage(def.id, 'body', dist, undefined, count) * 2.2);
-  let mul = 1 + (k.dmg || 0);
-  const head = part === 'head' && !melee;
-  if (head) mul *= 1 + (k.head || 0);
-  else if (!melee && k.bodyPenalty > 0) mul *= 1 - Math.min(1, k.bodyPenalty);
-  mul *= targetDamageMul(k, !!z.boss);
-  if (melee) mul *= 1 + (k.melee || 0);
-  if ((k.lastStand || 0) > 0 && num(o.myHpFrac, 1) <= 0.35) mul *= 1 + k.lastStand;
-  if ((k.executioner || 0) > 0 && num(z.hpFrac, 1) <= 0.25) mul *= 1 + k.executioner;
-  const nth = Math.max(0, num(o.nth, 0) | 0);
-  if (nth > 0) mul *= Math.max(PIERCE_MIN, Math.pow(PIERCE_FALLOFF, nth));
-  if ((k.airDmg || 0) > 0 && o.air && !melee) mul *= 1 + k.airDmg;   // 공중 강타: 총만(칼·수류탄 제외)
-  if ((k.sideMaster || 0) > 0 && def.slot === 2) mul *= 6;   // 보조무기 마스터: 보조무기 피해 +500%
-  return { dmg: base * mul, head, melee, part };
-}
-
+/** 피해 공식은 damage.js에 있다. 예전 경로(director.js)로 가져오는 곳을 위해 다시 내보낸다 */
+export { BLAST_MUL, nadeDamage, zombieHitDamage };
+/** 스냅샷 모양과 풀기는 wire.js에 있다. 예전 경로(director.js)로 가져오는 곳을 위해 다시 내보낸다 */
+export { HORDE_SNAPSHOT_VERSION, HORDE_PHASES, ZF, FIELD_KINDS, zombieIdOf, applyHordeSnapshot, hordeSummary };
 export { isZombieId, BOSS_CODE_BASE, BOSSES };
