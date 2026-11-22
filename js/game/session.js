@@ -55,7 +55,7 @@ import { maskProfanity } from '../core/profanity.js';
 import { platform } from '../platform/index.js';
 import { matchSummary, ffaTarget } from './rules/summary.js';
 import { connectGameServer as defaultConnectGameServer } from '../net/gameserver.js';
-import { chooseEngine as defaultChooseEngine, gameServerBase, gameServerWs } from '../net/rollout.js';
+import { chooseEngine as defaultChooseEngine, fetchRollout, gameServerBase, gameServerWs } from '../net/rollout.js';
 import { createServerLink, createInputSampler } from './serverlink.js';
 
 export const SESSION_DEFAULTS = Object.freeze({
@@ -1947,17 +1947,28 @@ export function createSession(options = {}) {
       .finally(() => { engineAsking = null; });
   }
 
-  /** (방장) 서버 판정으로 시작. 게임 서버에 닿지 않으면 이 방을 방장 판정으로 바꾸고 그대로 시작한다 */
+  /**
+   * (방장) 서버 판정으로 시작. 시작할 때 /rollout을 한 번 더 읽어 끄는 스위치(accepting:false)를 바로 따른다(방을 연 뒤에 꺼졌어도).
+   * 게임 서버가 받지 않거나 닿지 않으면 이 방을 방장 판정으로 바꾸고 그대로 시작한다
+   */
   function serverStart(mapId, ruleset) {
     const mid = randomId(8);
     const gr = randomId(12);
     trace('server start', mid, gr, mapId);
-    openServerMatch({ mid, mapId, ruleset, gr, create: true }).then((ok) => {
-      if (ok || disposed || !room || phase !== 'room' || !room.isHost()) return;
-      roomEngine = 'host';
-      pushChat({ system: true, text: t('room.serverFallback') });
-      hostStart();
-    });
+    serverOpening = mid;
+    Promise.resolve()
+      .then(() => (o.fetchRollout || fetchRollout)(gameServerBase(gsConfig())))
+      .catch(() => ({ ok: false }))
+      .then((info) => {
+        if (serverOpening === mid) serverOpening = null;
+        return info && info.ok && info.accepting ? openServerMatch({ mid, mapId, ruleset, gr, create: true }) : false;
+      })
+      .then((ok) => {
+        if (ok || disposed || !room || phase !== 'room' || !room.isHost()) return;
+        roomEngine = 'host';
+        pushChat({ system: true, text: t('room.serverFallback') });
+        hostStart();
+      });
   }
 
   /**

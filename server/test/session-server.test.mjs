@@ -208,7 +208,7 @@ describe('서버 판정 개인전(세션 + 진짜 게임 서버)', () => {
     };
     const server = await startTestServer({
       matchRules: { loadoutMs: 300, spawnProtectMs: 0, timeLimitMs: 120000 },
-      resultUrl: 'https://api.test/v1/match-result', resultSecret: SECRET, serverId: 'test:1', fetch: fakeApi, map: 'arena'
+      resultUrl: 'https://api.test/v1/match-result', resultSecret: SECRET, serverId: 'test:1', fetch: fakeApi, map: 'arena', serverRatio: 1
     });
     const env = stage({ url: server.url, chooseEngine: async () => 'server' });
     const a = env.client('a', '하늘');
@@ -268,7 +268,7 @@ describe('서버 판정 개인전(세션 + 진짜 게임 서버)', () => {
   });
 
   test('버전이 다르면 "새로고침 필요"를 띄우고 방장 판정으로', { timeout: 30000 }, async () => {
-    const server = await startTestServer();
+    const server = await startTestServer({ serverRatio: 1 });
     const { connectGameServer } = await import('../../js/net/gameserver.js');
     const env = stage({ url: server.url, chooseEngine: async () => 'server', connectGameServer: (o) => connectGameServer({ ...o, version: 1 }) });
     const a = env.client('a', '하늘');
@@ -279,6 +279,24 @@ describe('서버 판정 개인전(세션 + 진짜 게임 서버)', () => {
       a.ui.fire('room:start', {});
       await until(() => a.session.state.hosting, 5000, '방장 판정 시작');
       assert.ok(a.session.state.chat.some((l) => l.system && l.text.startsWith('새로고침 필요')), JSON.stringify(a.session.state.chat.map((l) => l.text)));
+    } finally {
+      env.dispose();
+      await server.close();
+    }
+  });
+
+  test('방을 연 뒤에 끄는 스위치를 켜면(비율 0) 다음 시작부터 방장 판정', { timeout: 30000 }, async () => {
+    const server = await startTestServer({ serverRatio: 0 });
+    const env = stage({ url: server.url, chooseEngine: async () => 'server' });
+    const a = env.client('a', '하늘');
+    const b = env.client('b', '구름');
+    try {
+      await openRoom(env, a, b);
+      await new Promise((r) => setImmediate(r));
+      a.ui.fire('room:start', {});
+      await until(() => a.session.state.hosting, 5000, '방장 판정 시작');
+      assert.ok(!env.hub.sent.some((m) => m.event === 'mx' && m.payload.eng === 's'), '서버 방을 만들지 않는다');
+      assert.equal(server.rooms.size, 0);
     } finally {
       env.dispose();
       await server.close();

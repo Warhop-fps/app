@@ -96,7 +96,8 @@ echo '{"ratio":0,"accepting":false}' | sudo tee /etc/skala-server/rollout.json
 curl -s http://127.0.0.1:8787/rollout
 ```
 
-성공 모습: `"accepting":false,"ratio":0,"why":"off"`. 5초 안에 새 방은 모두 방장 판정이다. 하고 있던 서버 판정 경기는 끝까지 가고 포인트도 들어간다.
+성공 모습: `"accepting":false,"ratio":0,"why":"off"`. 5초 안에 **모든 방의 다음 경기 시작**이 방장 판정이 된다(방장 브라우저가 시작할 때 `/rollout`을 한 번 더 읽는다. 그 방 채팅에 "게임 서버에 닿지 않아…" 안내가 한 번 나온다).
+하고 있던 서버 판정 경기는 끝까지 가고 포인트도 들어간다.
 **급할 때**(서버가 이상하게 판정한다 등): `sudo systemctl stop skala-server`. 하던 경기는 무효(포인트 없음)이고, 새 방은 서버에 닿지 않아 저절로 방장 판정이다.
 
 ## 5. 지켜볼 것
