@@ -101,7 +101,7 @@ director가 기대는 것(모두 순수): `engine/physics.js`(충돌·이동·�
 
 ## 6. 다음 단계 (G2)
 
-11-23 G2에서 1~5는 했다(8절). 6은 개발 PC에서만 쟀다(`docs/SERVER.md` 17절). 7은 남았다.
+11-23 G2에서 1~5는 했다(8절). 6은 개발 PC에서만 쟀다(`docs/SERVER.md` 19절). 7은 남았다.
 
 1. 서버 방에서 `createHordeRoom({ map, players, seed, rules })`를 만들고 30 Hz로 `room.step()`. 맵은 `js/maps/<id>.js`의 default를 import한다(`maps/index.js`는 top-level await로 전부 부른다).
 2. 손님 메시지를 `room.input(id, { x, y, z, yaw, slot, air, alive })`와 `room.send(id, { t: 'hit' | 'swing' | 'explode' | 'pick' | 'reroll' | 'loot' | 'revive', ... })`로 바꾼다.
@@ -207,5 +207,5 @@ director가 기대는 것(모두 순수): `engine/physics.js`(충돌·이동·�
   `createHordeClient`의 `ui`가 없을 때 705줄이 `ui.isVisible`을 바로 읽는다(브라우저에서는 늘 있어 문제가 없다. 서버 연결 화면을 만들 때 같이 본다).
 - 판 끝 요약을 결과 서명·저장에 잇기(8.4), 다시 붙기(같은 사람으로), 늦게 들어온 손님이 놓친 3초보다 오래된 이벤트는 스냅샷 상태로만 맞춘다(지금 브라우저 손님과 같다).
 - 판 시작 때 맵 준비(약 50 ms)가 그 틱 동안 다른 방도 멈춘다. 방이 많아지면 대기실에서 미리 만들거나 다른 스레드로.
-- EC2에서 다시 재기(`docs/SERVER.md` 17절의 명령 그대로).
+- EC2에서 다시 재기(`docs/SERVER.md` 19절의 명령 그대로).
 - 2절의 손님 판정을 서버로(G3).

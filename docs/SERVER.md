@@ -2,7 +2,7 @@
   Date: 06NOV2026
   Author: Minkyu Jung
   Purpose: 권위 서버 시제품(server/)의 구조, 프로토콜, 틱·되감기 설계, 입력 검증, 운영 지표, 브라우저 클라이언트를 붙이는 계획, 배포 계획(실행 환경 고르기·systemd·Caddy·Grafana Cloud·GitHub Actions·Durable Objects),
-           서버가 판정하는 개인전, 프로세스 나누기 계획, 개발 PC 부하 측정, 브라우저 접속 모듈, 좀비 방과 그 측정.
+           서버가 판정하는 개인전, 프로세스 나누기 계획, 개발 PC 부하 측정, 브라우저 접속 모듈.
 -->
 # 권위 서버 시제품
 
@@ -489,7 +489,6 @@ DO 어댑터는 `server-do/`처럼 따로 두고(Worker 템플릿의 `src/index.
 - 방 하나는 프로세스 하나 안에 있다. 사람이 많아지면 방을 여러 프로세스(또는 VM)에 나누고 방을 찾아 주는 로비가 필요하다.
 - 부하는 개발 PC에서만 쟀다(14절). EC2 서울에서 같은 명령으로 다시 재야 VM 한 대가 받을 방 수를 정할 수 있다.
 - 포인트는 서버가 계산만 하고 저장하지 않는다(12절).
-- 좀비 방(16절)은 서버에서 돌지만 브라우저 화면은 아직 붙지 않는다. 판 끝 요약은 `onHordeMatchEnd`로만 나온다.
 
 ## 12. 서버가 판정하는 개인전 (11-23)
 
@@ -556,7 +555,11 @@ npm run server:load -- --url ws://127.0.0.1:8790 --rooms 4 --bots 8 --seconds 18
 - 시험: `tests/gameserver-client.test.mjs`(켜는 조건, 오류, 같은 약속), `server/test/client.test.mjs`(실제 서버에 붙어 welcome·ack·거절·버전 오류).
 - **남은 일**(8절 3~7): 세션에 붙이기(방장 판정 끄기, 서버 이벤트로 화면 그리기), 예측·보정, 원격 아바타 보간, `index.html` CSP `connect-src`에 게임 서버 주소 더하기(주소가 정해질 때).
 
-## 16. 좀비 방 (11-23)
+## 18. 좀비 방 (11-23)
+
+(16·17절 번호는 개인전 화면 연결·결과 보내기 쪽이 쓴다. 이 절은 그 뒤에 붙는다.)
+
+서버에서 돌지만 브라우저 화면은 아직 붙지 않는다. 판 끝 요약은 `onHordeMatchEnd`로만 나온다.
 
 `join.opts.mode = 'zombie'`로 처음 만든 방은 좀비 물량 막기 방(`server/core/horde-room.js`)이다. 자세한 설명은 `docs/HORDE_SERVER.md` 8절.
 
@@ -568,7 +571,7 @@ npm run server:load -- --url ws://127.0.0.1:8790 --rooms 4 --bots 8 --seconds 18
 - 측정용 설정: `--horde-start-stage <n>`(시작 스테이지), `--horde-prep-sec <n>`(준비 시간). 손님은 고를 수 없다.
 - 시험: `tests/horde-server-room.test.mjs`(소켓 없이), `server/test/horde.test.mjs`(127.0.0.1, 봇 4명이 보스 스테이지를 끝낸다, 약 30초).
 
-## 17. 좀비 측정 (2026-11-23, 개발 PC)
+## 19. 좀비 측정 (2026-11-23, 개발 PC)
 
 > **EC2가 아니다.** 14절과 같은 개발 PC(Windows 11, Intel Core Ultra 5 125H, 메모리 16 GB, Node 24)에서 서버와 가짜 손님을 **같은 PC**에서 돌렸다. 네트워크는 루프백, 가짜 손님이 한쪽 30 ms 지연을 넣는다.
 > EC2(작은 VM)에서는 숫자가 더 나쁠 수 있다. 같은 명령으로 다시 잰다.

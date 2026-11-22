@@ -91,10 +91,10 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env) {
     options: {
       port: { type: 'string' }, host: { type: 'string' }, hz: { type: 'string' },
       'room-size': { type: 'string' }, 'ffa-room-size': { type: 'string' }, 'max-per-ip': { type: 'string' }, 'snapshot-every': { type: 'string' }, 'max-rooms-per-ip': { type: 'string' }, 'kill-target': { type: 'string' }, 'max-rooms': { type: 'string' }, 'max-rewind-ms': { type: 'string' },
-      map: { type: 'string' }, mode: { type: 'string' }, ruleset: { type: 'string' },
+      map: { type: 'string' }, mode: { type: 'string' }, ruleset: { type: 'string' }, 'horde-start-stage': { type: 'string' }, 'horde-prep-sec': { type: 'string' },
       origins: { type: 'string' }, 'trust-proxy': { type: 'boolean' }, 'log-level': { type: 'string' },
       'round-sec': { type: 'string' }, 'loadout-sec': { type: 'string' }, 'round-end-sec': { type: 'string' },
-      'rounds-to-win': { type: 'string' }, 'horde-start-stage': { type: 'string' }, 'horde-prep-sec': { type: 'string' }, seed: { type: 'string' }, 'stats-sec': { type: 'string' }, help: { type: 'boolean', short: 'h' }
+      'rounds-to-win': { type: 'string' }, seed: { type: 'string' }, 'stats-sec': { type: 'string' }, help: { type: 'boolean', short: 'h' }
     }
   });
   const c = { ...DEFAULTS, matchRules: { ...DEFAULTS.matchRules } };
