@@ -55,13 +55,17 @@ begin
 
   insert into public.fps_events (at, anon_id, session_id, name, mode, map, value, props)
   select
-    case when jsonb_typeof(e -> 'at') = 'number'
-              and abs((e ->> 'at')::double precision - extract(epoch from now()) * 1000) < 86400000
-         then to_timestamp((e ->> 'at')::double precision / 1000) else now() end,
+    -- 숫자인지 먼저 보고 나서 바꾼다(Postgres는 and의 앞쪽을 먼저 계산한다고 약속하지 않는다)
+    case when jsonb_typeof(e -> 'at') = 'number' then
+      case when abs((e ->> 'at')::numeric - extract(epoch from now())::numeric * 1000) < 86400000
+           then to_timestamp((e ->> 'at')::numeric / 1000) else now() end
+    else now() end,
     p_anon_id, p_session_id, e ->> 'name',
     case when jsonb_typeof(e -> 'mode') = 'string' and (e ->> 'mode') ~ '^[a-z0-9_-]{1,24}$' then e ->> 'mode' end,
     case when jsonb_typeof(e -> 'map') = 'string' and (e ->> 'map') ~ '^[a-z0-9_-]{1,32}$' then e ->> 'map' end,
-    case when jsonb_typeof(e -> 'value') = 'number' and abs((e ->> 'value')::numeric) <= 1000000000 then (e ->> 'value')::numeric end,
+    case when jsonb_typeof(e -> 'value') = 'number' then
+      case when abs((e ->> 'value')::numeric) <= 1000000000 then (e ->> 'value')::numeric end
+    end,
     case when jsonb_typeof(e -> 'props') = 'object' and pg_column_size(e -> 'props') <= 1024 then e -> 'props' end
   from jsonb_array_elements(p_events) as e
   where jsonb_typeof(e) = 'object'
