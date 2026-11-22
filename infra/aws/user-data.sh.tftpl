@@ -48,8 +48,15 @@ cat > /etc/fps/game.env <<'ENV'
 NODE_ENV=production
 LOG_LEVEL=info
 ALLOWED_ORIGINS=${allowed_origins}
+GAME_RESULT_URL=${game_result_url}
+ROLLOUT_FILE=/etc/fps/rollout.json
 ENV
 chmod 0644 /etc/fps/deploy.env /etc/fps/game.env
+# 서버 판정 방 비율·끄는 스위치(docs/SERVER_ROLLOUT_SOP.md). 처음에는 0%, 이미 있으면 소유자가 쓴 값을 그대로 둔다
+if [ ! -f /etc/fps/rollout.json ]; then
+  echo '{"ratio":0,"accepting":true}' > /etc/fps/rollout.json
+fi
+chmod 0644 /etc/fps/rollout.json
 
 cat > /etc/systemd/system/caddy.service <<'UNIT'
 [Unit]

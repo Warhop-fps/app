@@ -144,7 +144,8 @@ resource "aws_instance" "game" {
     install_command        = var.install_command
     worker_count           = var.worker_count
     allowed_origins        = local.allowed_origins
-    drain_max_seconds      = var.drain_max_seconds
+    game_result_url        = var.game_result_url
+    drain_max_seconds     = var.drain_max_seconds
     health_timeout_seconds = var.health_timeout_seconds
     secret_parameter_path  = var.secret_parameter_path
     secret_names           = join(" ", var.secret_names)

@@ -29,6 +29,9 @@ fi
 PORT=$(fps_port "$slot" "$index")
 export PORT
 export FPS_SLOT=$slot FPS_INSTANCE=$instance
+# 경기 결과의 serverId(docs/MATCH_RESULT_CONTRACT.md). 서버 이름과 프로세스 이름으로 프로세스마다 다르게 만든다
+GAME_SERVER_ID="$(hostname -s | tr -cd 'A-Za-z0-9.-' | cut -c1-40):$instance"
+export GAME_SERVER_ID
 cd "$release"
 # FPS_SERVICE_COMMAND는 Terraform 변수 service_command(따옴표·$ 없는 한 줄)다. 낱말로 나눠 그대로 실행한다
 # shellcheck disable=SC2086

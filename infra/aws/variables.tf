@@ -115,6 +115,16 @@ variable "allowed_origins" {
   }
 }
 
+variable "game_result_url" {
+  type        = string
+  default     = "https://skala-api.skala-fps.workers.dev/v1/match-result"
+  description = "게임 서버가 서명한 경기 결과를 보낼 API 주소(docs/MATCH_RESULT_CONTRACT.md). 도메인을 옮기면 https://api.<domain>/v1/match-result"
+  validation {
+    condition     = can(regex("^https://[A-Za-z0-9.-]+/v1/match-result$", var.game_result_url))
+    error_message = "game_result_url은 https://<호스트>/v1/match-result 모양이어야 합니다."
+  }
+}
+
 variable "drain_max_seconds" {
   type        = number
   default     = 1800
