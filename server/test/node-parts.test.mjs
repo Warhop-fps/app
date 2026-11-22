@@ -91,6 +91,10 @@ describe('metrics·log·config', () => {
     assert.throws(() => loadConfig(['--port', '70000'], {}), /--port/);
     assert.throws(() => loadConfig(['--map', 'nowhere'], {}), /--map/);
     assert.throws(() => loadConfig(['--what'], {}));
+    assert.equal(loadConfig(['--snapshot-every', '2', '--max-per-ip', '500', '--ffa-room-size', '8', '--kill-target', '10'], {}).config.snapshotEvery, 2);
+    const c = loadConfig(['--max-per-ip', '500', '--ffa-room-size', '8', '--kill-target', '10'], {}).config;
+    assert.deepEqual([c.maxPerIp, c.ffaRoomSize, c.defaultKillTarget], [500, 8, 10]);
+    assert.throws(() => loadConfig(['--kill-target', '30'], {}), /--kill-target/);
   });
 });
 

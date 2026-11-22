@@ -45,6 +45,7 @@ const USAGE = `사용법: node server/node.js [옵션]   방 주소: ws://<호�
   --port <n>            포트 (기본 ${DEFAULTS.port}, 환경 변수 PORT. 0이면 빈 포트)
   --host <addr>         받을 주소 (기본 ${DEFAULTS.host}, 환경 변수 HOST. Caddy 뒤에서는 127.0.0.1)
   --hz <n>              서버 틱 (기본 ${DEFAULTS.hz})
+  --snapshot-every <n>  스냅샷을 n틱마다 (기본 ${DEFAULTS.snapshotEvery}. 2면 15 Hz로 내려보내는 양이 약 절반)
   --room-size <n>       팀전 방 정원 (기본 ${DEFAULTS.roomSize})
   --ffa-room-size <n>   개인전 방 정원 (기본 ${DEFAULTS.ffaRoomSize})
   --kill-target <n>     개인전 목표 킬 기본값 5~20 (기본 20)
@@ -86,7 +87,7 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env) {
     allowPositionals: false,
     options: {
       port: { type: 'string' }, host: { type: 'string' }, hz: { type: 'string' },
-      'room-size': { type: 'string' }, 'ffa-room-size': { type: 'string' }, 'max-per-ip': { type: 'string' }, 'max-rooms-per-ip': { type: 'string' }, 'kill-target': { type: 'string' }, 'max-rooms': { type: 'string' }, 'max-rewind-ms': { type: 'string' },
+      'room-size': { type: 'string' }, 'ffa-room-size': { type: 'string' }, 'max-per-ip': { type: 'string' }, 'snapshot-every': { type: 'string' }, 'max-rooms-per-ip': { type: 'string' }, 'kill-target': { type: 'string' }, 'max-rooms': { type: 'string' }, 'max-rewind-ms': { type: 'string' },
       map: { type: 'string' }, mode: { type: 'string' }, ruleset: { type: 'string' },
       origins: { type: 'string' }, 'trust-proxy': { type: 'boolean' }, 'log-level': { type: 'string' },
       'round-sec': { type: 'string' }, 'loadout-sec': { type: 'string' }, 'round-end-sec': { type: 'string' },
@@ -99,6 +100,7 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env) {
   if (values.host ?? env.HOST) c.host = values.host ?? env.HOST;
   if (values.hz !== undefined) c.hz = int('--hz', values.hz, 10, 128);
   if (values['room-size'] !== undefined) c.roomSize = int('--room-size', values['room-size'], 2, 16);
+  if (values['snapshot-every'] !== undefined) c.snapshotEvery = int('--snapshot-every', values['snapshot-every'], 1, 10);
   if (values['max-per-ip'] !== undefined) c.maxPerIp = int('--max-per-ip', values['max-per-ip'], 1, 10000);
   if (values['max-rooms-per-ip'] !== undefined) c.maxRoomsPerIp = int('--max-rooms-per-ip', values['max-rooms-per-ip'], 1, 10000);
   if (values['ffa-room-size'] !== undefined) c.ffaRoomSize = int('--ffa-room-size', values['ffa-room-size'], 2, 16);
