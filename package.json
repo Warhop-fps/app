@@ -13,7 +13,11 @@
     "check:maps": "node tools/check-maps.mjs",
     "check:imports": "node tools/check-imports.mjs",
     "check": "npm run check:headers && npm run check:imports && npm run check:maps && npm test",
-    "build:crazygames": "node tools/build-site.mjs --portal crazygames"
+    "build:crazygames": "node tools/build-site.mjs --portal crazygames",
+    "server": "node server/node.js",
+    "server:install": "npm --prefix server ci",
+    "server:bots": "node server/tools/bots.js",
+    "test:server": "node --test \"server/test/*.test.mjs\""
   },
   "engines": {
     "node": ">=20"

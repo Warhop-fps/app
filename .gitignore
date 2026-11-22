@@ -28,3 +28,5 @@ infra/aws/terraform.tfvars
 tools/models/node_modules/
 dist-crazygames/
 dist-crazygames.zip
+# 서버 의존성(server/package.json의 ws)은 npm --prefix server ci로 받는다. 사이트에는 npm 패키지가 없다
+server/node_modules/

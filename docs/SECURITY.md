@@ -84,3 +84,6 @@ SKALA 작전에는 게임 서버가 없다. 정적 사이트(GitHub Pages)와 Su
 클라이언트 예측과 서버 보정, 쏜 사람 시점으로 되감는 지연 보정을 쓴다. 이 저장소의 물리·이동·경기 규칙(`js/engine/physics.js`, `js/engine/movement.js`, `js/game/match.js`)은
 three.js 없이 node에서 도는 순수 모듈이라 서버로 옮기기 좋다. 상시 돌아가는 서버(작은 VM이나 Cloudflare Durable Objects 등)가 필요하다.
 경기 결과도 서버가 계산하면 포인트·전적 한도(위 5번)도 정확한 값으로 바꿀 수 있다.
+
+시제품은 `server/`에 있다(Node.js WebSocket 방 서버, `docs/SERVER.md`). 위 모듈을 그대로 불러 30 Hz로 판정하고, 사격은 쏜 사람이 본 틱으로 되감아(상한 300 ms) 판정한다.
+1·2번은 구조로 해결되고, 3번(시야 걸러내기)과 4번(계정의 무기 확인)은 그 서버 위에 더할 다음 단계다. 브라우저 클라이언트는 아직 붙지 않았다.
