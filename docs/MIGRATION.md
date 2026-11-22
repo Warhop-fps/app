@@ -95,7 +95,7 @@ npm --prefix server/relay run deploy
 - Builder ID(개인 이메일), Activate 프로필(도메인과 맞는 사업용 이메일), 연결할 AWS 계정·정확한 사업/제품 정보를 준비한다. **활성화된 Paid Tier Plan 계정과 결제 수단**을 확인하고, 무료 플랜이라면 콘솔에서 유료 플랜 전환 조건을 확인한다. 유료 플랜은 유료 기술지원 계약을 뜻하지 않는다.
 - [AWS 신청 공식 안내](https://aws.amazon.com/aws-startups/learn/applying-for-aws-activate-credits-a-step-by-step-guide/)와 [공식 FAQ](https://startups.aws.com/faq)의 Paid Tier Plan 항목을 신청 당일 다시 확인한다. 심사는 수일 이상 걸릴 수 있다. 승인/잔액/만료일은 Billing → Credits에서 확인한다.
 - `terraform init` → `plan` → `apply`, SNS 구독 이메일 확인, EIP를 `game.` DNS only A 레코드로 연결한다. 보안 그룹은 80/443만, 운영 접속은 SSM이다.
-- 기본 서비스는 **기존 Node relay 어댑터**이며 서버 판정 구현 대신 인프라 동작을 확인하는 임시 서비스다. 브라우저는 자동으로 AWS로 연결하지 않는다. 권위 서버가 병합된 뒤 배포 커밋/명령·클라이언트 연결·방 배정·부하 시험을 별도 검토한다.
+- 서버는 **서버 판정 게임 서버**(`server/node.js`)를 코어 수만큼 띄우고, `game-server-v*` 태그로 무중단 배포한다([GAME_SERVER_DEPLOY_SOP.md](GAME_SERVER_DEPLOY_SOP.md)). 브라우저는 자동으로 AWS로 연결하지 않는다. 클라이언트 연결·방 배정·부하 시험은 별도 검토한다.
 - 월 기본 $40의 50/80/100% 경보와 CPU·상태 검사 경보를 첫날 켠다. 비용 반영 지연이 있고 자동 차단이 아니다. 송신 과금·공인 IPv4·지원금 만료를 감시한다.
 
 ## 7. 공개 전 확인표 (약 15분)

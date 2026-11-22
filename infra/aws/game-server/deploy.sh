@@ -79,7 +79,11 @@ mv "$FPS_STATE_DIR/slot-$new.env.tmp" "$FPS_STATE_DIR/slot-$new.env"
 # 5) 새 프로세스 시작(코어 하나에 하나, 방 하나는 한 프로세스 안의 단일 스레드 액터)
 log "슬롯 $new에 프로세스 $workers개 시작: 포트 $ports"
 for ((i = 1; i <= workers; i++)); do
-  systemctl start "fps-game@$new$i.service"
+  systemctl start "fps-game@$new$i.service" || {
+    journalctl --no-pager --lines 40 -u "fps-game@$new$i" || true
+    fps_stop_slot "$new"
+    die "fps-game@$new$i 시작 실패. 옛 버전은 그대로 둡니다"
+  }
 done
 
 # 6) 건강 확인: 모든 새 프로세스의 /healthz가 200이어야 다음으로 간다

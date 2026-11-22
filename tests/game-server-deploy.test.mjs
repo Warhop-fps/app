@@ -261,6 +261,19 @@ test('비밀 값 파일: 이름 검사, 없는 값은 실패, 이상한 글자�
   assert.equal(renderSecretsEnv(readSettings({}), { Parameters: [] }).split('\n').filter((l) => l && !l.startsWith('#')).length, 0);
 });
 
+test('SOP: 워크플로가 읽는 변수와 되돌리기(이전 태그 다시 배포)를 적어 둔다', () => {
+  const sop = read('docs/GAME_SERVER_DEPLOY_SOP.md');
+  const outputs = read(`${AWS}/outputs.tf`);
+  for (const name of new Set([...read(workflowFile).matchAll(/vars\.([A-Z_]+)/g)].map((m) => m[1]))) {
+    assert.ok(sop.includes(`gh variable set ${name} `), `SOP 4.5에 ${name}`);
+    assert.ok(outputs.includes(name), `outputs.tf 설명에 ${name}`);
+  }
+  assert.match(sop, /gh workflow run deploy-game-server\.yml --ref game-server-v/);
+  assert.match(sop, /## 8\. 되돌리기/);
+  assert.match(sop, /--type SecureString/);
+  assert.ok(sop.includes(JSON.parse(variableDefault('secret_parameter_path')) + '/GAME_RESULT_SECRET'));
+});
+
 test('셸 스크립트 문법(bash -n)', { skip: process.platform === 'win32' ? 'Windows의 bash는 WSL일 수 있어 건너뜀(CI·Linux에서 돈다)' : false }, () => {
   for (const file of scripts.filter((f) => f.endsWith('.sh'))) {
     const r = spawnSync('bash', ['-n', join(root, file)], { encoding: 'utf8' });

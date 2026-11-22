@@ -1,7 +1,7 @@
 <!--
   Date: 06NOV2026
   Author: Minkyu Jung
-  Purpose: 서울 서버의 안전한 생성·접속·비용 알림·철거 절차와 현재 중계 서비스의 한계를 설명한다.
+  Purpose: 서울 게임 서버의 안전한 생성·접속·비용 알림·철거 절차를 설명하고, 태그 배포 절차(docs/GAME_SERVER_DEPLOY_SOP.md)로 안내한다.
 -->
 # 서울 게임 서버 운영
 
@@ -9,7 +9,7 @@
 
 ## 지금 실행하는 서비스
 
-기본 `service_command`는 의존성 없는 기존 Node 중계 어댑터 `server/relay/src/node.js`다. **서버 판정 게임 서버가 아니다.** 방장 브라우저가 판정하며, 프로세스를 재시작하면 메모리의 방이 사라진다. 검토된 서버 판정 구현이 병합되면 `repo_ref`와 `service_command`를 함께 바꾼다. 새 서비스는 `127.0.0.1:8788`에서 받아야 한다. 추가 패키지·빌드가 필요한 구현이라면 이 부트스트랩을 먼저 수정해야 한다. 현재 템플릿은 npm 의존성을 설치하지 않는다.
+서버 판정 게임 서버(`server/node.js`)를 vCPU 수만큼 프로세스로 띄우고 Caddy가 방 주소로 나눠 보낸다. 첫 부팅은 `repo_ref`를, 이후 배포는 `game-server-v*` 태그를 GitHub Actions(OIDC → SSM 배포 문서)가 받아 무중단으로 바꾼다(새 프로세스 → `/healthz` 확인 → Caddy 전환 → 옛 프로세스 비우기). 비밀 값은 SSM Parameter Store에서 서버가 직접 읽는다. 시작 명령 `service_command`의 기본값은 권위 서버 시제품 기준이다. **처음 만들기·배포·되돌리기 절차는 [docs/GAME_SERVER_DEPLOY_SOP.md](../../docs/GAME_SERVER_DEPLOY_SOP.md)를 따른다.** 서버 안 스크립트·유닛은 `game-server/`에 있다.
 
 브라우저는 계속 Cloudflare 중계 주소를 쓴다. `game.<도메인>`은 TLS·건강 확인까지 준비하는 별도 주소이고 자동으로 방을 이전하지 않는다. 테스트 방 없이 `relay.url`을 AWS로 돌리지 않는다.
 
@@ -40,12 +40,12 @@ terraform -chdir=infra/aws output
 
 ```sh
 sudo cloud-init status --wait
-sudo systemctl status fps caddy amazon-ssm-agent
-sudo journalctl -u fps -u caddy --since '-15 minutes'
-curl --fail http://127.0.0.1:8788/health
+sudo systemctl status 'fps-game@*' caddy amazon-ssm-agent
+sudo journalctl -u 'fps-game@*' -u caddy --since '-15 minutes'
+curl --fail http://127.0.0.1:8801/healthz
 ```
 
-외부 PC에서 `curl https://game.<도메인>/health`가 정상인지 본다. DNS 전파 전에는 Caddy 인증서 발급이 실패할 수 있다. DNS가 맞으면 자동 재시도하며, 필요하면 SSM에서 `sudo systemctl restart caddy` 한다. Caddy는 80에서 HTTPS 전환/인증서 검증을 받고 443에서 WSS를 포함해 Node로 프록시한다. 서비스는 비특권 전용 계정으로 동작하고 IMDSv2를 강제한다. SSM·부트스트랩 다운로드·인증서 갱신을 위해 인터넷 아웃바운드는 허용한다.
+외부 PC에서 `curl https://game.<도메인>/healthz`가 정상인지 본다. DNS 전파 전에는 Caddy 인증서 발급이 실패할 수 있다. DNS가 맞으면 자동 재시도하며, 필요하면 SSM에서 `sudo systemctl restart caddy` 한다. Caddy는 80에서 HTTPS 전환/인증서 검증을 받고 443에서 WSS를 포함해 Node로 프록시한다. 서비스는 비특권 전용 계정으로 동작하고 IMDSv2를 강제한다. SSM·부트스트랩 다운로드·인증서 갱신을 위해 인터넷 아웃바운드는 허용한다.
 
 `repo_ref`/명령/템플릿 변경은 EC2를 교체하고 EIP를 새 서버에 다시 연결한다. 교체 동안 접속이 끊긴다. 데이터는 Node 메모리 외에 남기지 않는 현재 중계 기준이다. EBS는 종료 시 삭제되며 프로덕션 영속 데이터를 여기에 두지 않는다. 운영 변경 전 접속을 비우고 필요 시 상태·로그를 따로 백업한다.
 
@@ -66,7 +66,8 @@ curl --fail http://127.0.0.1:8788/health
 
 - CPU 평균 80% 초과가 10분 지속되거나 EC2 상태 검사 실패 시 SNS 메일, 복구 시에도 메일.
 - 월 실제 비용이 $40의 **50%($20)·80%($32)·100%($40)**를 넘으면 이메일. 계정 전체 비용을 잡고 크레딧/환불을 제외해 지원금 때문에 경고가 사라지지 않게 한다.
-- **예산 알림은 지출 상한·즉시 탐지·자동 정지가 아니다.** 비용 반영이 늦고 초과 과금될 수 있다. 첫날 Billing → Budgets 설정·수신 메일을 확인한다. 이 구성에는 게임 틱 지연/접속 수/프로세스 가용성 경보가 없으므로 서버 판정 도입 때 그 지표를 추가한다.
+- **예산 알림은 지출 상한·즉시 탐지·자동 정지가 아니다.** 비용 반영이 늦고 초과 과금될 수 있다. 첫날 Billing → Budgets 설정·수신 메일을 확인한다.
+- 게임 지표(`SkalaFps/GameServer`, 서버 안 `fps-metrics.timer`가 1분마다): 틱 p95가 5분 동안 33 ms 초과, `/healthz` 실패가 3분(값이 안 와도 실패)이면 SNS 메일. 사용자 지표 8개·경보 2개가 더 든다(무료 구간을 넘으면 월 약 $3).
 
 ## 철거 / 롤백
 
