@@ -17,7 +17,7 @@
 | 방장 판정 방 | 지금처럼 방장 브라우저가 판정하는 방. 팀전·폭파 미션·좀비는 늘 이쪽 |
 | 비율(ratio) | 새로 여는 방 중 서버 판정으로 할 몫. `0.1` = 10%. 방장 브라우저가 방을 열 때 주사위를 굴린다 |
 | 끄는 스위치(kill switch) | 비율 파일의 `"accepting": false`. 새 방은 모두 방장 판정이 된다. **이미 하고 있는 경기는 끝까지 간다** |
-| rollout 파일 | 게임 서버의 `/etc/skala-server/rollout.json`. 서버가 5초마다 다시 읽는다(서버를 다시 켤 필요 없음) |
+| rollout 파일 | 게임 서버의 `/etc/fps/rollout.json`. 서버가 5초마다 다시 읽는다(서버를 다시 켤 필요 없음) |
 | `/rollout` | 게임 서버 주소 뒤에 붙는 확인 주소. 지금 비율과 받는지를 JSON으로 보여 준다 |
 | 대신하기(fallback) | 게임 서버에 닿지 않으면 그 방은 저절로 방장 판정으로 시작한다 |
 | 무효 경기 | 경기 중에 게임 서버가 꺼지면 그 경기는 결과가 없다(포인트 없음). 사람들은 대기실로 돌아간다 |
@@ -30,8 +30,8 @@
 | 게임 서버 주소 | `game.<도메인>` (예: `game.example.io`). `js/config.js`의 `gameServer.url = 'wss://game.<도메인>'` |
 | 주소를 넣는 명령 | `node tools/set-domain.mjs --game-server game.<도메인>` (config·`index.html`·`_headers`의 CSP를 함께 바꾼다) |
 | 주소를 빼는 명령 | `node tools/set-domain.mjs --game-server off` |
-| 비율 파일 | 게임 서버의 `/etc/skala-server/rollout.json`, 내용 `{"ratio":0.1,"accepting":true}` |
-| 게임 서버 환경 변수 | `ROLLOUT_FILE=/etc/skala-server/rollout.json`, `GAME_RESULT_URL=https://skala-api.skala-fps.workers.dev/v1/match-result`, `GAME_RESULT_SECRET`(SSM `/skala-fps/game-result-secret`), `GAME_SERVER_ID=ec2-a:1`, `ALLOWED_ORIGINS=https://<사이트 주소>` |
+| 비율 파일 | 게임 서버의 `/etc/fps/rollout.json`, 내용 `{"ratio":0.1,"accepting":true}` |
+| 게임 서버 환경 변수 | `ROLLOUT_FILE=/etc/fps/rollout.json`, `GAME_RESULT_URL=https://skala-api.skala-fps.workers.dev/v1/match-result`, `GAME_RESULT_SECRET`(SSM `/skala-fps/game/GAME_RESULT_SECRET`), `GAME_SERVER_ID=ec2-a:1`, `ALLOWED_ORIGINS=https://<사이트 주소>` |
 | 확인 주소 | `https://game.<도메인>/rollout`, `https://game.<도메인>/healthz` |
 | 로그 보기 | 게임 서버에서 `journalctl -u skala-server -o cat -f` |
 | 결과 장부(DB) | Supabase SQL Editor: `select result_id, players, points_total, received_at from public.fps_match_results order by received_at desc limit 20;` |
@@ -52,8 +52,8 @@
 게임 서버에 접속해서(AWS 콘솔 → EC2 → 인스턴스 → **연결** → Session Manager):
 
 ```bash
-sudo mkdir -p /etc/skala-server
-echo '{"ratio":0,"accepting":true}' | sudo tee /etc/skala-server/rollout.json
+sudo mkdir -p /etc/fps
+echo '{"ratio":0,"accepting":true}' | sudo tee /etc/fps/rollout.json
 curl -s http://127.0.0.1:8787/rollout
 ```
 
@@ -82,7 +82,7 @@ npm run check
 ### 4-4. 10% → 50% → 100%
 
 ```bash
-echo '{"ratio":0.1,"accepting":true}' | sudo tee /etc/skala-server/rollout.json
+echo '{"ratio":0.1,"accepting":true}' | sudo tee /etc/fps/rollout.json
 curl -s http://127.0.0.1:8787/rollout
 ```
 
@@ -92,7 +92,7 @@ curl -s http://127.0.0.1:8787/rollout
 ### 4-5. 끄는 스위치
 
 ```bash
-echo '{"ratio":0,"accepting":false}' | sudo tee /etc/skala-server/rollout.json
+echo '{"ratio":0,"accepting":false}' | sudo tee /etc/fps/rollout.json
 curl -s http://127.0.0.1:8787/rollout
 ```
 

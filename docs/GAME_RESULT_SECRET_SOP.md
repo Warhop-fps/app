@@ -27,7 +27,7 @@
 |---|---|
 | Worker 이름 | `skala-api` (명령은 `server/api` 폴더에서) |
 | Worker 비밀 값 이름 | `GAME_RESULT_SECRET`, 교체 중에만 `GAME_RESULT_SECRET_PREV` |
-| SSM 매개변수 이름 | `/skala-fps/game-result-secret` (게임 서버 쪽, `SecureString`) |
+| SSM 매개변수 이름 | `/skala-fps/game/GAME_RESULT_SECRET` (게임 서버 쪽, `SecureString`) |
 | AWS 지역(region) | `ap-northeast-2` (서울, `infra/aws/main.tf`와 같다) |
 | 받는 주소 | `https://skala-api.skala-fps.workers.dev/v1/match-result` |
 | 값이 없을 때 | 그 주소가 404(닫힘). 게임 서버는 결과를 쌓아 두고 다시 보낸다 |
@@ -60,12 +60,12 @@ npx wrangler secret put GAME_RESULT_SECRET
 ### 3-3. AWS SSM에 넣기
 
 ```powershell
-aws ssm put-parameter --region ap-northeast-2 --name /skala-fps/game-result-secret --type SecureString --value "<3-1의 값>" --overwrite
+aws ssm put-parameter --region ap-northeast-2 --name /skala-fps/game/GAME_RESULT_SECRET --type SecureString --value "<3-1의 값>" --overwrite
 ```
 
 성공 모습: `{ "Version": 1, "Tier": "Standard" }`. 그 뒤 게임 서버를 다시 켜야 새 값을 읽는다(재시작 방법은 게임 서버 배포 문서).
 
-PowerShell 기록에 값이 남는 것이 싫으면 AWS 콘솔 → Systems Manager → Parameter Store → **Create parameter**에서 이름 `/skala-fps/game-result-secret`, 종류 `SecureString`으로 붙여 넣어도 같다.
+PowerShell 기록에 값이 남는 것이 싫으면 AWS 콘솔 → Systems Manager → Parameter Store → **Create parameter**에서 이름 `/skala-fps/game/GAME_RESULT_SECRET`, 종류 `SecureString`으로 붙여 넣어도 같다.
 
 ### 3-4. 확인
 
@@ -85,7 +85,7 @@ select result_id, mode, map, players, points_total, received_at from public.fps_
 값이 샜을지 모를 때, 또는 반년에 한 번. 옛 값으로 서명한 결과도 하루 동안 받으니 게임은 끊기지 않는다.
 
 1. 3-1로 **새 값**을 만든다.
-2. Worker에 **옛 값을 PREV로**: `npx wrangler secret put GAME_RESULT_SECRET_PREV` → 지금 쓰는 값(SSM에서 볼 수 있다: `aws ssm get-parameter --region ap-northeast-2 --name /skala-fps/game-result-secret --with-decryption --query Parameter.Value --output text`)을 붙여 넣는다.
+2. Worker에 **옛 값을 PREV로**: `npx wrangler secret put GAME_RESULT_SECRET_PREV` → 지금 쓰는 값(SSM에서 볼 수 있다: `aws ssm get-parameter --region ap-northeast-2 --name /skala-fps/game/GAME_RESULT_SECRET --with-decryption --query Parameter.Value --output text`)을 붙여 넣는다.
 3. Worker에 **새 값을**: `npx wrangler secret put GAME_RESULT_SECRET` → 새 값.
 4. SSM에 **새 값을**: 3-3 명령을 새 값으로 다시(`--overwrite`). 게임 서버를 다시 켠다.
 5. 하루 뒤 옛 값을 지운다: `npx wrangler secret delete GAME_RESULT_SECRET_PREV` → `y`.

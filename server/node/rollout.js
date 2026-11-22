@@ -5,7 +5,7 @@
  *          서버를 다시 띄우지 않고 5초 안에 /rollout 답이 바뀐다. 브라우저는 방을 만들 때 이 답을 읽어 그 방을 서버 판정으로 할지 정한다(js/net/rollout.js).
  */
 /**
- *   const ro = createRollout({ ratio: 0.1, file: '/etc/skala-server/rollout.json', log });
+ *   const ro = createRollout({ ratio: 0.1, file: '/etc/fps/rollout.json', log });
  *   ro.current()   // { ratio, accepting, source }  source: 'file' | 'config'
  *   ro.close()
  *
