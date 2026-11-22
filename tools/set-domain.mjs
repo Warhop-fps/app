@@ -2,6 +2,8 @@
  * Date: 06NOV2026
  * Author: Minkyu Jung
  * Purpose: 도메인 이전의 정적 주소·접속 허용 목록을 함께 바꾸고 외부 콘솔 점검표를 출력한다.
+ *          --game-server <호스트>만 주면 게임 서버(서버 판정 방) 주소만 켠다: js/config.js gameServer.url과 index.html·_headers의 connect-src를 함께 바꾼다.
+ *          --game-server off는 주소를 비우고 connect-src에서 뺀다(docs/SERVER_ROLLOUT_SOP.md).
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -17,6 +19,16 @@ function hostname(value) {
 
 export function parseArgs(args) {
   const options = {};
+  const gs = args.indexOf('--game-server');
+  if (gs >= 0) {
+    // 게임 서버 주소만 바꾸는 모드: 다른 옵션과 섞지 않는다
+    const rest = args.filter((_, i) => i !== gs && i !== gs + 1);
+    const value = args[gs + 1];
+    if (!value) throw new Error('사용법: node tools/set-domain.mjs --game-server game.example.io | off [--dry-run]');
+    for (const a of rest) { if (a === '--dry-run') options.dryRun = true; else throw new Error('--game-server와 함께 쓸 수 없는 옵션: ' + a); }
+    options.gameServer = value === 'off' ? 'off' : hostname(value);
+    return options;
+  }
   const names = { '--domain': 'domain', '--game-host': 'gameHost', '--api-host': 'apiHost', '--relay-host': 'relayHost', '--game-server-host': 'gameServerHost' };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--keep-old') options.keepOld = true;
@@ -24,7 +36,7 @@ export function parseArgs(args) {
     else if (names[args[i]]) options[names[args[i]]] = hostname(args[++i]);
     else throw new Error('모르는 옵션: ' + args[i]);
   }
-  if (!options.domain) throw new Error('사용법: node tools/set-domain.mjs --domain example.io [--game-host example.io] [--api-host api.example.io] [--relay-host relay.example.io] [--game-server-host game.example.io] [--keep-old] [--dry-run]');
+  if (!options.domain) throw new Error('사용법: node tools/set-domain.mjs --domain example.io [--game-host example.io] [--api-host api.example.io] [--relay-host relay.example.io] [--game-server-host game.example.io] [--keep-old] [--dry-run]\n       node tools/set-domain.mjs --game-server game.example.io | off [--dry-run]');
   return options;
 }
 
@@ -71,7 +83,47 @@ export function setDomain(root, options, log = console.log) {
   return { changed, hosts: { game, api, relay, gameServer } };
 }
 
+const GS_FILES = ['js/config.js', 'index.html', '_headers'];
+const GS_RE = /(\bgameServer:\s*\{\s*url:\s*)'[^']*'/;
+
+/** 지금 js/config.js의 게임 서버 호스트(없으면 null) */
+export function currentGameServer(configText) {
+  const m = configText.match(/\bgameServer:\s*\{\s*url:\s*'wss:\/\/([^/']+)\/?'/);
+  return m ? m[1] : null;
+}
+
+/**
+ * 게임 서버 주소만 켜고 끈다. host = 'game.example.io' | 'off'.
+ * 켜기: gameServer.url = 'wss://<host>', connect-src에 https·wss://<host>를 더한다(옛 게임 서버 호스트는 뺀다).
+ * 끄기: gameServer.url = '', connect-src에서 옛 게임 서버 호스트를 뺀다. 모든 파일을 먼저 바꿔 본 뒤 한꺼번에 쓴다.
+ */
+export function setGameServer(root, host, { dryRun = false } = {}, log = console.log) {
+  const sources = Object.fromEntries(GS_FILES.map((file) => [file, readFileSync(resolve(root, file), 'utf8')]));
+  if (!GS_RE.test(sources['js/config.js'])) throw new Error('js/config.js의 gameServer.url을 찾지 못했습니다');
+  const old = currentGameServer(sources['js/config.js']);
+  const on = host !== 'off';
+  const h = on ? hostname(host) : null;
+  const csp = (text) => text.replace(/connect-src\s+([^;"\r\n]+)/g, (_, values) => {
+    const keep = values.trim().split(/\s+/).filter((token) => !old || (token !== `https://${old}` && token !== `wss://${old}`));
+    return 'connect-src ' + [...new Set([...keep, ...(on ? [`https://${h}`, `wss://${h}`] : [])])].join(' ');
+  });
+  const next = {
+    'js/config.js': sources['js/config.js'].replace(GS_RE, `$1'${on ? `wss://${h}` : ''}'`),
+    'index.html': csp(sources['index.html']),
+    '_headers': csp(sources['_headers'])
+  };
+  const changed = GS_FILES.filter((file) => next[file] !== sources[file]);
+  if (!dryRun) for (const file of changed) writeFileSync(resolve(root, file), next[file]);
+  log(`${dryRun ? '미리보기' : '기록'}: 게임 서버 ${on ? `wss://${h}` : '끔'} (${changed.length}개 파일: ${changed.join(', ') || '바뀐 것 없음'})`);
+  if (on) log(`수동 점검표:\n- DNS: ${h} → EC2 고정 IP (DNS only)\n- 게임 서버: ALLOWED_ORIGINS에 사이트 주소, GET https://${h}/rollout 응답 확인\n- 사이트 배포 뒤 비율은 서버의 rollout 파일로 정한다(docs/SERVER_ROLLOUT_SOP.md)`);
+  return { changed, host: h, previous: old };
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try { setDomain(ROOT, parseArgs(process.argv.slice(2))); }
+  try {
+    const opts = parseArgs(process.argv.slice(2));
+    if (opts.gameServer) setGameServer(ROOT, opts.gameServer, opts);
+    else setDomain(ROOT, opts);
+  }
   catch (error) { console.error(error.message); process.exitCode = 1; }
 }
