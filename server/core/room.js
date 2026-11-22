@@ -6,7 +6,7 @@
  */
 /**
  *   const room = createRoom({ send: (playerId, text) => socketOf(playerId).send(text), id: 'abc', map: 'arena' });
- *   room.join(playerId, { name, team });   // 신원(playerId)은 어댑터가 정한다 → { ok, team } | { ok:false, code }
+ *   room.join(playerId, { name, team, tokenHash });   // 신원(playerId)은 어댑터가 정한다 → { ok, team } | { ok:false, code }. tokenHash는 방 밖으로 내보내지 않는다
  *   room.input(playerId, msg);             // protocol.decodeClient로 검사한 input·pick·team·start·respawn. 쌓아 두었다가 다음 틱에 순서대로 처리한다
  *   room.tick();                           // 틱 하나(어댑터가 1/hz초마다 부른다). 틱 길이는 만들 때 hz로 정해진다
  *   room.leave(playerId);
@@ -25,6 +25,7 @@
  *   4. 이 틱의 자리를 지연 보정 기록에 남긴다(기록 k = 스냅샷 k)
  *   5. 스냅샷(틱마다) · 이벤트(있으면) · 점수판(이벤트가 있었거나 0.5초마다)
  *   경기가 끝나면(matchEnd) 사람마다 보상(core/rewards.js)을 계산해 그 사람에게만 { type:'reward' } 이벤트로 보낸다.
+ *   개인전이면 같은 계산으로 경기 결과(docs/MATCH_RESULT_CONTRACT.md 1절, signedAt 빼고)를 만들어 onResult로 넘긴다(서명·전송은 어댑터, node/results.js).
  * 틱 밖에서 생긴 일(입장·퇴장·무기 선택)의 이벤트도 다음 틱 끝에 함께 나간다.
  */
 import { PLAYER } from '../../js/core/consts.js';
@@ -36,8 +37,8 @@ import { createActor } from './actor.js';
 import { meleeTrace, resolveShot } from './combat.js';
 import { createHistory, rewindTarget } from './lagcomp.js';
 import { loadMap } from './maps.js';
-import { PROTOCOL, ROW } from './protocol.js';
-import { QUICK_RESPAWN_COST, matchRewards } from './rewards.js';
+import { PROTOCOL, ROW, TOKEN_HASH_RE } from './protocol.js';
+import { QUICK_RESPAWN_COST, buildResult, matchRewards } from './rewards.js';
 
 const round2 = (v) => Math.round(v * 100) / 100;
 const r2 = (v) => [round2(v[0]), round2(v[1]), round2(v[2])];
@@ -63,12 +64,16 @@ const r2 = (v) => [round2(v[0]), round2(v[1]), round2(v[2])];
  * @param {() => number} [o.rng] 탄퍼짐·스폰 섞기 난수
  * @param {object} [o.log] 로거(log.info·debug)
  * @param {() => void} [o.onEmpty] 마지막 사람이 나갔을 때
+ * @param {(result:object) => void} [o.onResult] 개인전 경기 끝의 결과(약속 모양, signedAt 없음). 토큰 해시를 낸 사람만 들어간다
+ * @param {string} [o.resultRoomId] 결과의 roomId. 같은 방 id를 다시 써도 결과 번호가 겹치지 않게 어댑터가 붙인다(기본 id)
+ * @param {string} [o.serverId='local'] 결과의 serverId
+ * @param {() => number} [o.wallNow=Date.now] 결과의 시각(ms)
  */
 export function createRoom(o) {
   const {
     send, rttOf = null, id = 'room', map = 'arena', mode = 'team', ruleset = 'classic', killTarget = null, inboxMax = 512, hz = 30, substeps = 2, roomSize = 6,
     maxRewindMs = 300, historyTicks = 64, snapshotEvery = 1, matchEvery = 15, rules = {},
-    rng = Math.random, log = null, onEmpty = null
+    rng = Math.random, log = null, onEmpty = null, onResult = null, resultRoomId = id, serverId = 'local', wallNow = Date.now
   } = o;
   if (typeof send !== 'function') throw new TypeError('createRoom: send(playerId, text)가 필요하다');
   const built = loadMap(map);
@@ -89,6 +94,9 @@ export function createRoom(o) {
   const inbox = [];          // [playerId, msg] 도착 순서
   const quick = new Map();   // 사람별 이번 경기 즉시 부활 횟수(보상에서 뺀다)
   let liveTick = null;       // 경기가 live가 된 틱(보상의 경기 길이)
+  let liveAt = null;         // 경기가 live가 된 벽시계(ms, 결과의 startedAt)
+  let matchSeq = 0;          // 이 방에서 끝난 경기 수(결과 번호)
+  const hashes = new Map();  // 사람 → 기기 토큰 해시. 스냅샷·이벤트에 싣지 않는다
   let match = newMatch();
   let phase = 'warmup';
   let tickNo = 0;
@@ -198,7 +206,7 @@ export function createRoom(o) {
         break;
       case 'phase':
         phase = ev.phase;
-        if (ev.phase === 'live' && liveTick == null) liveTick = tickNo;
+        if (ev.phase === 'live' && liveTick == null) { liveTick = tickNo; liveAt = wallNow(); }
         if (ev.phase === 'live' && ev.loadouts) {
           for (const [pid, w] of Object.entries(ev.loadouts)) { const a = actors.get(pid); if (a) a.setPick(w, true); }
         }
@@ -216,12 +224,28 @@ export function createRoom(o) {
     }
   }
 
-  /** 경기 끝: 사람마다 보상을 계산해 그 사람에게만 보낸다. 포인트 저장은 아직 클라이언트 몫이다(docs/SERVER.md 11절) */
+  /**
+   * 경기 끝: 사람마다 보상을 계산해 그 사람에게만 보낸다(reward.server = true면 포인트는 서버가 넣는다).
+   * 개인전이면 같은 값으로 경기 결과를 만들어 onResult로 넘긴다. 팀전은 아직 결과를 내지 않는다(서버 판정은 개인전만)
+   */
   function sendRewards(ev) {
     const players = [...actors.values()].map((a) => ({ id: a.id, team: a.team }));
     const seconds = liveTick == null ? 0 : Math.round(((tickNo - liveTick) * tickMs) / 1000);
-    for (const r of matchRewards(ev, { players, mode: ffa ? 'ffa' : 'team', ruleset: rs, mapId: built.id, killTarget: match.rules.killTarget, seconds, quick })) {
-      direct(r.id, { type: 'reward', id: r.id, summary: r.summary, reward: r.reward, quick: r.quick, cost: r.quick * QUICK_RESPAWN_COST });
+    const rewards = matchRewards(ev, { players, mode: ffa ? 'ffa' : 'team', ruleset: rs, mapId: built.id, killTarget: match.rules.killTarget, seconds, quick });
+    const posting = ffa && typeof onResult === 'function';
+    for (const r of rewards) {
+      direct(r.id, {
+        type: 'reward', id: r.id, summary: r.summary, reward: r.reward, quick: r.quick, cost: r.quick * QUICK_RESPAWN_COST,
+        server: posting && hashes.has(r.id)
+      });
+    }
+    if (!posting) return;
+    matchSeq += 1;
+    const result = buildResult(ev, rewards, {
+      roomId: resultRoomId, matchSeq, serverId, map: built.id, startedAt: liveAt, endedAt: wallNow(), hashes
+    });
+    if (result) {
+      try { onResult(result); } catch (err) { if (log) log.error({ err, room: id }, 'onResult failed'); }
     }
   }
 
@@ -319,7 +343,7 @@ export function createRoom(o) {
 
   // ── 공개 API ──────────────────────────────────────────
   /** 들어온다. playerId는 어댑터가 정한 신원이다(클라이언트가 고르지 않는다) */
-  function join(pid, { name, team = null } = {}) {
+  function join(pid, { name, team = null, tokenHash = null } = {}) {
     if (disposed) return { ok: false, code: 'room_closed' };
     if (typeof pid !== 'string' || !pid) return { ok: false, code: 'bad_id' };
     if (actors.has(pid)) return { ok: false, code: 'duplicate_id' };
@@ -329,6 +353,7 @@ export function createRoom(o) {
     if (!first || first.type === 'reject') return { ok: false, code: (first && first.reason) || 'join_failed' };
     const actor = createActor({ id: pid, name: first.name, team: first.team, world: built.world, ruleset: rs, rng, substeps, tickDt, hp: match.rules.hp });
     actors.set(pid, actor);
+    if (typeof tokenHash === 'string' && TOKEN_HASH_RE.test(tokenHash)) hashes.set(pid, tokenHash);
     if (!leader) leader = pid;
     send(pid, welcome(pid, first.team));
     absorb(evs);
@@ -341,6 +366,7 @@ export function createRoom(o) {
     if (!a) return false;
     actors.delete(pid);
     directOut.delete(pid);
+    hashes.delete(pid);
     a.dispose();
     absorb(match.removePlayer(pid));
     if (leader === pid) {
@@ -359,6 +385,7 @@ export function createRoom(o) {
     phase = 'warmup';
     quick.clear();
     liveTick = null;
+    liveAt = null;
     match = newMatch();
     for (const a of actors.values()) absorb(match.addPlayer({ id: a.id, name: a.name, team: a.team }));
   }
@@ -439,6 +466,7 @@ export function createRoom(o) {
     get currentTick() { return tickNo; },
     get phase() { return phase; },
     get leader() { return leader; },
+    get matchSeq() { return matchSeq; },
     get killTarget() { return ffa ? match.rules.killTarget : null; },
     get inboxSize() { return inbox.length; },
     get match() { return match; },

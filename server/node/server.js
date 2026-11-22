@@ -29,6 +29,7 @@ import { DEFAULTS } from './config.js';
 import { createLogger } from './log.js';
 import { createLoop } from './loop.js';
 import { createMetrics } from './metrics.js';
+import { createResultPoster } from './results.js';
 import { createProcessStats, createRate, createSampler } from './rolling.js';
 
 export const SERVER_VERSION = '0.1.0';
@@ -64,6 +65,11 @@ export async function startServer(options = {}) {
   const startedAt = Date.now();
   let connSeq = 0;
   let playerSeq = 0;
+  let roomSerial = 0;
+  // 결과 번호(resultId)가 서버를 다시 띄워도, 같은 방 id를 다시 써도 겹치지 않게 프로세스마다 다른 꼬리를 붙인다
+  const bootId = randomBytes(4).toString('hex');
+  const serverId = cfg.serverId || 'local';
+  const poster = options.poster || createResultPoster({ url: cfg.resultUrl, secret: cfg.resultSecret, log, fetch: options.fetch });
   let closing = false;
   // 통계 창: statsIntervalMs마다 로그 한 줄씩(서버 전체 + 방마다) 내고 비운다
   let win = { ...emptyWindow(), start: performance.now() };
@@ -136,7 +142,8 @@ export async function startServer(options = {}) {
   function stats() {
     return {
       ok: !closing, version: SERVER_VERSION, protocol: PROTOCOL, uptimeSec: Math.round((Date.now() - startedAt) / 1000),
-      hz: cfg.hz, ticks: loop.ticks, rooms: rooms.size, players: playerCount(), connections: conns.size, live: live(), window: lastWindow
+      hz: cfg.hz, ticks: loop.ticks, rooms: rooms.size, players: playerCount(), connections: conns.size, live: live(), window: lastWindow,
+      results: poster.stats()
     };
   }
   function onHttp(req, res) {
@@ -328,7 +335,10 @@ export async function startServer(options = {}) {
         rttOf: (pid) => { const c = byPlayer.get(pid); return c ? c.rtt : null; },
         id: roomId, ...opts, hz: cfg.hz, substeps: cfg.substeps, roomSize: opts.mode === 'ffa' ? cfg.ffaRoomSize : cfg.roomSize, maxRewindMs: cfg.maxRewindMs,
         historyTicks: cfg.historyTicks, snapshotEvery: cfg.snapshotEvery, matchEvery: cfg.matchEvery, rules: cfg.matchRules,
-        rng: mulberry32(Math.floor(master() * 0xffffffff)), log, onEmpty: () => closeRoom(roomId, 'empty')
+        rng: mulberry32(Math.floor(master() * 0xffffffff)), log, onEmpty: () => closeRoom(roomId, 'empty'),
+        // 개인전 경기 끝의 결과 → 서명해서 API로(꺼져 있으면 버린다). 서버가 경기 중에 꺼지면 결과가 없다 = 그 경기는 무효
+        resultRoomId: `${roomId}-${bootId}-${++roomSerial}`, serverId,
+        onResult: poster.enabled ? (result) => poster.post(result) : null
       });
       room.creatorIp = conn.ip;
       roomsByIp.set(conn.ip, (roomsByIp.get(conn.ip) || 0) + 1);
@@ -339,7 +349,7 @@ export async function startServer(options = {}) {
     byPlayer.set(playerId, conn);         // join 안에서 보내는 welcome이 닿게 먼저 잇는다
     conn.room = room;
     conn.playerId = playerId;
-    const r = room.join(playerId, { name: msg.name, team: msg.team });
+    const r = room.join(playerId, { name: msg.name, team: msg.team, tokenHash: msg.tokenHash });
     if (!r.ok) {
       byPlayer.delete(playerId);
       conn.room = null;
@@ -466,6 +476,9 @@ export async function startServer(options = {}) {
     await new Promise((r) => setTimeout(r, open.length ? 200 : 0));
     for (const conn of open) conn.ws.terminate();
     for (const id of [...rooms.keys()]) closeRoom(id, 'server_shutdown');
+    // 이미 끝난 경기의 결과는 잠깐 더 보내 본다. 그래도 남으면 로그만 남기고 버린다
+    if (poster.pending) await Promise.race([poster.idle(), new Promise((r) => setTimeout(r, cfg.resultFlushMs).unref())]);
+    poster.close();
     await new Promise((r) => {
       httpServer.close(() => r());
       httpServer.closeAllConnections();
@@ -474,5 +487,5 @@ export async function startServer(options = {}) {
   }
 
   const url = `ws://${host}:${port}`;
-  return { url, roomUrl: (id) => `${url}/room/${id}`, httpUrl: `http://${host}:${port}`, port, close, stats, metrics, rooms, config: cfg };
+  return { url, roomUrl: (id) => `${url}/room/${id}`, httpUrl: `http://${host}:${port}`, port, close, stats, metrics, rooms, config: cfg, results: poster };
 }

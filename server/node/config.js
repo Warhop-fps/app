@@ -38,6 +38,10 @@ export const DEFAULTS = Object.freeze({
   allowedOrigins: Object.freeze([]), // 비어 있으면 Origin을 보지 않는다(개발). 운영은 사이트 주소만. Origin이 없는 요청(브라우저 밖)은 통과
   trustProxy: false,        // true면 X-Forwarded-For의 첫 주소를 접속 IP로 본다(Caddy 뒤에서만 켠다)
   logLevel: 'info',
+  serverId: '',             // 경기 결과의 serverId(환경 변수 GAME_SERVER_ID, 예: ec2-a:1). 비면 'local'
+  resultUrl: '',            // 경기 결과를 보낼 주소(환경 변수 GAME_RESULT_URL). 비면 결과를 보내지 않는다
+  resultSecret: '',         // 서명 비밀 값(환경 변수 GAME_RESULT_SECRET, 32글자 이상). 명령줄로는 받지 않는다(ps에 보이지 않게)
+  resultFlushMs: 3000,      // 끌 때 남은 결과를 더 보내 보는 시간
   seed: null                // 난수 시드(재현용). null이면 시각에서
 });
 
@@ -62,7 +66,8 @@ const USAGE = `사용법: node server/node.js [옵션]   방 주소: ws://<호�
   --stats-sec <n>       통계 로그(서버 한 줄 + 방마다 한 줄) 간격 (기본 ${DEFAULTS.statsIntervalMs / 1000})
   --round-sec <n>       라운드 길이(초)      --loadout-sec <n>  무기 선택 시간(초)
   --round-end-sec <n>   라운드 결과 시간(초) --rounds-to-win <n> 선승 수
-  --seed <n>            난수 시드`;
+  --seed <n>            난수 시드
+환경 변수(경기 결과): GAME_RESULT_URL(POST 주소), GAME_RESULT_SECRET(32글자 이상), GAME_SERVER_ID(결과의 serverId). 둘 중 하나라도 없으면 결과를 보내지 않는다`;
 
 export { USAGE };
 
@@ -134,5 +139,11 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env) {
   }
   if (values.seed !== undefined) c.seed = int('--seed', values.seed, 0, 0xffffffff);
   if (values['stats-sec'] !== undefined) c.statsIntervalMs = seconds('--stats-sec', values['stats-sec'], 1, 3600);
+  if (env.GAME_SERVER_ID) {
+    if (!/^[A-Za-z0-9_.:-]{1,64}$/.test(env.GAME_SERVER_ID)) throw new Error('GAME_SERVER_ID: 영문·숫자·_.:- 1~64자');
+    c.serverId = env.GAME_SERVER_ID;
+  }
+  if (env.GAME_RESULT_URL) c.resultUrl = String(env.GAME_RESULT_URL).trim();
+  if (env.GAME_RESULT_SECRET) c.resultSecret = String(env.GAME_RESULT_SECRET);
   return { config: c, help: !!values.help };
 }

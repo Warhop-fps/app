@@ -9,7 +9,8 @@
  * 전송: 텍스트 프레임 하나에 JSON 객체 하나. 필드 t가 형식이다. 자세한 표는 docs/SERVER.md 3절.
  *
  * 클라이언트 → 서버
- *   join  { t:'join', v, name, team?, opts?:{ map, mode, ruleset, killTarget } }   접속 후 한 번. opts는 방을 처음 만들 때만 쓴다
+ *   join  { t:'join', v, name, team?, opts?:{ map, mode, ruleset, killTarget }, tokenHash? }   접속 후 한 번. opts는 방을 처음 만들 때만 쓴다
+ *           tokenHash 기기 토큰의 SHA-256(소문자 hex 64자). 경기 결과를 계정에 잇는 값이다. 서버는 이 값을 다른 사람에게 보내지 않는다(MATCH_RESULT_CONTRACT 1절)
  *           v가 서버의 PROTOCOL과 다르면 error { code:'bad_version', reload:true, server }를 보내고 4002로 끊는다(화면은 "새로고침 필요")
  *   input { t:'input', seq, keys, press?, yaw, pitch, slot?, viewTick? }   입력 하나 = 서버 틱 하나(1/30초)
  *           seq 입력 번호(0..MAX_SEQ, 늘어나기만 한다)   keys 누르고 있는 키(KEY 비트)   press 이번 입력 사이에 새로 누른 키(PRESS 비트)
@@ -45,6 +46,8 @@ const OPT_RE = /^[a-z0-9_-]{1,24}$/i;
 const PITCH_LIMIT = (89 * Math.PI) / 180;
 const MAX_ANGLE = 1e6;
 const TEAMS = Object.freeze(['owner', 'charterer']);
+/** 기기 토큰 해시(소문자 hex 64자). 형식이 틀리면 없는 것으로 본다(손님) */
+export const TOKEN_HASH_RE = /^[0-9a-f]{64}$/;
 const MODES = Object.freeze(['team', 'ffa']);
 
 /** 클라이언트가 보낼 수 있는 형식. 이 밖의 t는 버린다 */
@@ -110,7 +113,8 @@ const intOr = (v, d) => (v === undefined || v === null ? d : Number.isInteger(v)
 const DECODERS = Object.freeze(Object.assign(Object.create(null), {
   join(v) {
     if (!Number.isInteger(v.v)) return null;
-    return { t: 'join', v: v.v, name: cleanName(v.name), team: TEAMS.includes(v.team) ? v.team : null, opts: cleanOpts(v.opts) };
+    const tokenHash = typeof v.tokenHash === 'string' && TOKEN_HASH_RE.test(v.tokenHash) ? v.tokenHash : null;
+    return { t: 'join', v: v.v, name: cleanName(v.name), team: TEAMS.includes(v.team) ? v.team : null, opts: cleanOpts(v.opts), tokenHash };
   },
   input(v) {
     const seq = v.seq;

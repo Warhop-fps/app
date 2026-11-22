@@ -39,6 +39,8 @@ const EYE = 1.6, CROUCH_EYE = 1.1;
  * @param {object} [o.opts] 방을 만들 때의 { map, mode, ruleset, killTarget }
  * @param {boolean} [o.quickRespawn=false] 개인전에서 죽으면 바로 respawn(E)을 보낸다
  * @param {number} [o.version] join에 싣는 판(기본 PROTOCOL. 버전 거절 시험용)
+ * @param {string} [o.tokenHash] join에 싣는 기기 토큰 해시(경기 결과 시험용, 소문자 hex 64자)
+ * @param {(text:string) => void} [o.onRaw] 받은 글자 그대로(시험이 토큰 해시가 새지 않는지 본다)
  * @param {'fight'|'strafe'|'idle'|'manual'} [o.behavior='fight']
  * @param {number} [o.latencyMs=0] 한쪽 지연(보낼 때와 받을 때 각각 더한다)
  * @param {number} [o.jitterMs=0] 지연에 더하는 무작위 폭
@@ -51,7 +53,8 @@ const EYE = 1.6, CROUCH_EYE = 1.1;
 export function createFakeClient(o) {
   const {
     url, room, name = 'bot', team = null, opts = undefined, behavior = 'fight', latencyMs = 0, jitterMs = 0,
-    interpMs = 100, engageDist = 9, burst = [3, 6], strafeTicks = 30, wsOptions = undefined, quickRespawn = false, version = PROTOCOL
+    interpMs = 100, engageDist = 9, burst = [3, 6], strafeTicks = 30, wsOptions = undefined, quickRespawn = false, version = PROTOCOL,
+    tokenHash = undefined, onRaw = null
   } = o;
   const [burstOn, burstOff] = burst;
   const ws = new WebSocket(`${url}/room/${room}`, wsOptions);
@@ -89,10 +92,11 @@ export function createFakeClient(o) {
   }
 
   ws.on('open', () => {
-    send({ t: 'join', v: version, name, team, opts });
+    send({ t: 'join', v: version, name, team, opts, ...(tokenHash ? { tokenHash } : {}) });
   });
   ws.on('message', (data) => {
     const text = data.toString('utf8');
+    if (onRaw) onRaw(text);
     const d = delay();
     if (d <= 0) { onText(text); return; }
     const now = performance.now();
