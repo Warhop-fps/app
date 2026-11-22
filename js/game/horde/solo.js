@@ -9,7 +9,7 @@ import { createHordeClient, hordeScoreboard } from './client.js';
 import { cardById, TIERS } from './cards.js';
 import { getDef, DEFAULT_LOADOUT } from '../../weapons/defs.js';
 import { isWeaponAllowed } from '../modes.js';
-import { isZombieMap } from '../../maps/collision.js';
+import { zombieGates } from './sim/room.js';
 import { t } from '../../core/i18n.js';
 
 const PUSH_MS = 50;                       // 혼자일 때 화면에 스냅샷을 넘기는 간격(20 Hz)
@@ -55,7 +55,7 @@ export function startHordeSolo(o) {
     return hordeSpawnPrimary(lastPick || (lo && lo.primary));
   };
   // 좀비 전용 맵은 좀비가 좀비 문(레드 쪽 스폰 자리)에서만 나온다
-  const gates = isZombieMap(info.data || map.data) && map.spawns && Array.isArray(map.spawns.charterer) ? map.spawns.charterer : undefined;
+  const gates = zombieGates(info.data || map.data, map.spawns);
   const director = createHorde({
     players: [{ id: me.id, name: me.name }], world: map.world, nav, spawns: map.spawns, gates, seed: opts.seed || undefined,
     startStage: opts.startStage || 1, rules: { ...SOLO_RULES, ...(opts.hordeRules || {}) },

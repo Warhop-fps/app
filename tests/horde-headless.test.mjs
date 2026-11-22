@@ -12,6 +12,8 @@ import { createHordeBot } from '../js/game/horde/sim/bots.js';
 import { createDigest, digestOf, stableJson } from '../js/game/horde/sim/digest.js';
 import { createHorde } from '../js/game/horde/director.js';
 import { isZombieMap } from '../js/maps/collision.js';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const { default: RESTAREA } = await import('../js/maps/restarea.js');
 
@@ -137,6 +139,16 @@ describe('좀비 물량 막기: 화면 없이 돌리기', () => {
 
   test('씨앗 없이는 방을 만들지 않는다', () => {
     assert.throws(() => createHordeRoom({ map: RESTAREA, players: PLAYERS }));
+  });
+});
+
+describe('부하 측정 도구(npm run sim:horde)', () => {
+  test('방 하나를 돌려 틱 시간·스냅샷 크기·지문을 JSON으로 낸다', () => {
+    const tool = fileURLToPath(new URL('../tools/horde-sim.mjs', import.meta.url));
+    const out = JSON.parse(execFileSync(process.execPath, [tool, '--rooms', '1', '--stages', '1', '--json'], { encoding: 'utf8', windowsHide: true }));
+    assert.equal(out.rooms, 1);
+    assert.ok(out.ticks > 300 && out.tickMs.avg >= 0 && out.snapshotBytes.max > 0);
+    assert.match(out.results[0].digest, /^[0-9a-f]{16}$/);
   });
 });
 
