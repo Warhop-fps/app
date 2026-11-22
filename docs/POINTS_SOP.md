@@ -134,3 +134,20 @@ select name, points, points_adjust from public.fps_players where name_key = lowe
 2. `supabase/schema.sql`의 `fps_price_table`에 같은 id와 값을 넣는다(`npm test`가 둘이 다르면 떨어진다).
 3. **main에 올리기 전에** 소유자에게 알려 실서버에서 schema.sql을 다시 실행하게 한다. 안 해도 이제 포인트는 안 사라지지만, 그 무기는 실행 전까지 팔리지 않는다.
 4. main에 바로 푸시하지 말고 PR로 올린다(main은 올리는 즉시 실서비스에 배포된다).
+
+## 6. 게임 서버가 준 포인트 (마이그레이션 0003 뒤)
+
+서버 판정 방(EC2 게임 서버)의 경기 보상은 브라우저가 아니라 **게임 서버가 서명한 결과**로 들어온다(`docs/MATCH_RESULT_CONTRACT.md`). 한 사람 한 경기 2,000P까지, 같은 결과는 한 번만.
+
+- `fps_points_log`에서 `actor`가 `match:<방>:<순번>`인 줄은 운영자 조정이 아니라 경기 결과다.
+- 누가 어느 경기에서 얼마 받았는지:
+
+```sql
+select m.result_id, p.name, m.points, m.before_points, m.after_points, r.mode, r.map, r.received_at
+from public.fps_match_points m
+join public.fps_players p on p.id = m.player_id
+join public.fps_match_results r on r.result_id = m.result_id
+order by r.received_at desc limit 50;
+```
+
+- 잘못 들어간 결과를 되돌릴 때는 위에서 `m.points`를 보고 3-4처럼 그만큼 빼 준다. `fps_match_results`·`fps_match_points` 줄은 지우지 않는다(지우면 같은 결과가 다시 들어올 수 있다).

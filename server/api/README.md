@@ -61,7 +61,7 @@
 
 ### 1. Supabase
 
-1. SQL Editor에서 `supabase/schema.sql`을 처음부터 끝까지 다시 실행한다(여러 번 실행해도 안전하다). 새 표 `fps_tokens`·`fps_identities`·`fps_auth_used`·`fps_orders`·`fps_coin_ledger`와 `fps_players.coins`, 함수 `fps_api_*`가 생긴다.
+1. SQL Editor에서 아직 실행하지 않은 `supabase/migrations/` 번호 파일을 차례로 실행한다(`docs/DB_MIGRATION_SOP.md`). 새 프로젝트라면 `supabase/schema.sql`(모든 번호를 이어 붙인 사본) 하나를 처음부터 끝까지 실행해도 된다(여러 번 실행해도 안전하다). 새 표 `fps_tokens`·`fps_identities`·`fps_auth_used`·`fps_orders`·`fps_coin_ledger`와 `fps_players.coins`, 함수 `fps_api_*`가 생긴다.
 2. Project Settings → API Keys에서 **Secret key**(`sb_secret_…`)를 복사해 둔다. 이 키는 RLS를 건너뛰는 관리자 키라 Worker secret에만 넣는다. 게임 파일·저장소에 넣지 않는다.
 
 ### 2. 구글 OAuth 클라이언트
@@ -94,6 +94,8 @@ npm run deploy
 ```
 
 `AUTH_SECRET`은 `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`로 만든다. 카카오를 쓰면 `KAKAO_CLIENT_ID`(와 켰다면 `KAKAO_CLIENT_SECRET`)도 넣는다. 배포 전 묶음 검사는 `npm run check`(wrangler dry-run)다.
+
+게임 서버(EC2)의 경기 결과를 받으려면 `GAME_RESULT_SECRET`(32글자 이상)도 넣는다. 없으면 `POST /v1/match-result`는 404로 닫혀 있다. 약속은 `docs/MATCH_RESULT_CONTRACT.md`, 넣고 바꾸는 절차는 `docs/GAME_RESULT_SECRET_SOP.md`.
 
 배포 주소(`https://skala-api.<계정 하위 도메인>.workers.dev`)의 `/features`를 열어 `db:true`, `login.providers`에 구글, `pay.enabled:true`가 보이면 된다.
 
@@ -142,6 +144,8 @@ Cloudflare에서 산 도메인이 있으면 Workers & Pages → `skala-api` → 
 | `src/pay.js` | 상품표, 주문·결제 페이지·성공·실패·웹훅·환불·코인으로 사기·대사 |
 | `src/pages.js` | 결제 페이지 HTML·CSP·`/pay/checkout.js` |
 | `src/toss.js`, `src/db.js` | 토스 API, Supabase RPC |
+| `src/events.js` | 익명 사용 기록 받기 `POST /v1/events`(검사·IP 한도 → `fps_api_log_events`, 마이그레이션 0002) |
+| `src/match-result.js`, `src/result-sign.js` | 게임 서버가 서명한 경기 결과 받기 `POST /v1/match-result`(서버끼리만 → `fps_api_apply_match_result`, 마이그레이션 0003). `result-sign.js`는 게임 서버도 같이 쓰는 서명·검증 모듈 |
 | `src/http.js`, `src/crypto.js` | HTTP·Origin·주소 검사, base64url·HMAC |
 
-시험: `tests/api-worker.test.mjs`(Worker, 가짜 Supabase·토스·구글), `tests/api-sql.test.mjs`(SQL과 Worker의 약속), `tests/account-online.test.mjs`(브라우저 쪽 흐름), QA `tools/qa/scenarios/online.mjs`.
+시험: `tests/api-worker.test.mjs`(Worker, 가짜 Supabase·토스·구글), `tests/api-events.test.mjs`(사용 기록), `tests/result-sign.test.mjs`·`tests/api-match-result.test.mjs`(경기 결과 서명·받기), `tests/api-sql.test.mjs`(SQL과 Worker의 약속), `tests/account-online.test.mjs`(브라우저 쪽 흐름), QA `tools/qa/scenarios/online.mjs`.

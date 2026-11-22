@@ -502,6 +502,8 @@ async function boot() {
   wireTeardown(ctx, machine, fallback);
 
   loop.start();
+  // 익명 사용 기록(net/telemetry.js). API 주소가 없거나 시험·localhost면 스스로 꺼진다. 못 불러와도 게임은 그대로 뜬다
+  import('./net/telemetry.js').then((m) => m.installTelemetry({ bus })).catch(() => {});
   bus.emit('app:ready', { ctx });
   await machine.set('menu');
   platformReady.then(() => platform.loadingStop());

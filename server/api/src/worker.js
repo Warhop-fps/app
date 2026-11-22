@@ -21,10 +21,15 @@
  *   POST /pay/webhook               토스 웹훅(PAYMENT_STATUS_CHANGED)
  *   POST /pay/cancel                { token, orderId }     → { ok, coins } | { ok:false, error }
  *   POST /shop/coins                { token, itemId }      → { ok, coins, spent, owned } | { ok:false, error }
+ *   POST /v1/events                 { anonId, sessionId, events:[…] } → { ok, n } | { ok:false, error }  게임 사용 기록(events.js)
+ *   POST /v1/match-result           { kid, sig, result } → { ok, duplicate, applied, skipped, points } | { ok:false, error }
+ *                                   게임 서버가 서명한 경기 결과(match-result.js). 서버끼리만(Origin 있으면 403), GAME_RESULT_SECRET 없으면 404
  */
 import * as auth from './auth.js';
 import { createDb } from './db.js';
+import * as events from './events.js';
 import { corsHeaders, json, originAllowed, readJson } from './http.js';
+import { receive as receiveMatchResult, resultSecrets } from './match-result.js';
 import { enabledProviders, publicProvider } from './oauth.js';
 import * as pay from './pay.js';
 import { createToss } from './toss.js';
@@ -37,7 +42,8 @@ const POST_ROUTES = Object.freeze({
   '/me': auth.me,
   '/pay/orders': pay.createOrder,
   '/pay/cancel': pay.cancelOrder,
-  '/shop/coins': pay.buyWithCoins
+  '/shop/coins': pay.buyWithCoins,
+  '/v1/events': events.ingest
 });
 
 const defaultLog = (line) => console.log(JSON.stringify(line));
@@ -122,9 +128,16 @@ export async function route(request, env, deps) {
     }
     if (request.method === 'POST') {
       if (url.pathname === '/pay/webhook') return await pay.webhook(request, ctx);
+      if (url.pathname === '/v1/match-result') {
+        // 서버끼리만 부른다: 비밀 값이 없으면 없는 주소처럼, 브라우저(Origin 헤더)는 허용 목록과 상관없이 거절. CORS 헤더를 붙이지 않는다
+        if (!resultSecrets(env).length) return json({ ok: false, error: 'not_found' }, 404);
+        if (origin) return json({ ok: false, error: 'origin_not_allowed' }, 403);
+        return await receiveMatchResult(request, ctx);
+      }
       const handler = Object.prototype.hasOwnProperty.call(POST_ROUTES, url.pathname) ? POST_ROUTES[url.pathname] : null;
       if (!handler) return withCors(json({ ok: false, error: 'not_found' }, 404));
       if (!originAllowed(origin, env.ALLOWED_ORIGINS)) return json({ ok: false, error: 'origin_not_allowed' }, 403);
+      if (handler === events.ingest) return withCors(await events.ingest(request, ctx));   // 본문 한도가 달라 직접 읽는다
       const body = await readJson(request);
       if (!body) return withCors(json({ ok: false, error: 'BAD_REQUEST' }, 400));
       return withCors(await handler(body, ctx));
