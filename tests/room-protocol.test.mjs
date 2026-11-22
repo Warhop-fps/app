@@ -17,7 +17,7 @@ describe('decodeClient', () => {
   test('join: 이름을 정리하고 모르는 팀·옵션은 버린다(방 id는 주소가 정한다)', () => {
     const r = decodeClient(enc({ t: 'join', v: PROTOCOL, room: 'ignored', name: '  철수‮\u0007 ', team: 'blue', opts: { map: 'arena', mode: 'ffa', ruleset: 'knife', x: 1 } }));
     assert.equal(r.ok, true);
-    assert.deepEqual(r.msg, { t: 'join', v: PROTOCOL, name: '철수', team: null, opts: { map: 'arena', mode: 'ffa', ruleset: 'knife', killTarget: null } });
+    assert.deepEqual(r.msg, { t: 'join', v: PROTOCOL, name: '철수', team: null, opts: { map: 'arena', mode: 'ffa', ruleset: 'knife', killTarget: null }, tokenHash: null });
   });
 
   test('join: 개인전 목표 킬은 5~20으로 자르고, 숫자가 아니면 없는 것으로 본다', () => {
