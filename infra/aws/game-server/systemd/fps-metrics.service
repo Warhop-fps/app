@@ -1,0 +1,19 @@
+# Date: 06NOV2026
+# Author: Minkyu Jung
+# Purpose: 게임 프로세스의 /healthz·/metrics를 한 번 읽어 CloudWatch 사용자 지표(방·사람·틱 p95·건강)로 올린다. fps-metrics.timer가 60초마다 부른다.
+[Unit]
+Description=Push game server metrics to CloudWatch
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+EnvironmentFile=/etc/fps/deploy.env
+Environment=HOME=/tmp
+ExecStart=/usr/local/bin/node /usr/local/lib/fps/metrics-agent.mjs
+TimeoutStartSec=45
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true

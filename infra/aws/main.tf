@@ -19,8 +19,16 @@ provider "aws" {
 }
 
 locals {
+  region           = "ap-northeast-2"
   game_server_host = var.game_server_host != "" ? var.game_server_host : "game.${var.domain}"
+  allowed_origins  = var.allowed_origins != "" ? var.allowed_origins : "https://${var.domain},https://www.${var.domain}"
+  # 서버 안 지표 수집기(game-server/metrics-agent.mjs)가 올리는 이름공간과 차원 값
+  metrics_namespace = "SkalaFps/GameServer"
+  metrics_service   = "${var.project}-game"
+  secret_arn_prefix = "arn:aws:ssm:${local.region}:${data.aws_caller_identity.current.account_id}:parameter${var.secret_parameter_path}"
 }
+
+data "aws_caller_identity" "current" {}
 
 data "aws_ssm_parameter" "ami" {
   name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
@@ -82,6 +90,38 @@ resource "aws_iam_role_policy_attachment" "ssm" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
+# 서버 안에서 쓰는 권한: 이 경로의 비밀 값 읽기와 이 이름공간의 지표 올리기만
+resource "aws_iam_role_policy" "game_runtime" {
+  name = "game-runtime"
+  role = aws_iam_role.ssm.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "ReadGameSecrets"
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter", "ssm:GetParameters"]
+        Resource = "${local.secret_arn_prefix}/*"
+      },
+      {
+        # 기본 키(aws/ssm)로 암호화한 SecureString을 SSM을 거쳐서만 푼다
+        Sid       = "DecryptThroughSsm"
+        Effect    = "Allow"
+        Action    = "kms:Decrypt"
+        Resource  = "*"
+        Condition = { StringEquals = { "kms:ViaService" = "ssm.${local.region}.amazonaws.com" } }
+      },
+      {
+        Sid       = "PutGameMetrics"
+        Effect    = "Allow"
+        Action    = "cloudwatch:PutMetricData"
+        Resource  = "*"
+        Condition = { StringEquals = { "cloudwatch:namespace" = local.metrics_namespace } }
+      }
+    ]
+  })
+}
+
 resource "aws_iam_instance_profile" "game" {
   name_prefix = "${var.project}-game-"
   role        = aws_iam_role.ssm.name
@@ -96,10 +136,20 @@ resource "aws_instance" "game" {
   iam_instance_profile        = aws_iam_instance_profile.game.name
   user_data_replace_on_change = true
   user_data = templatefile("${path.module}/user-data.sh.tftpl", {
-    game_server_host = local.game_server_host
-    repo_url         = var.repo_url
-    repo_ref         = var.repo_ref
-    service_command  = var.service_command
+    region                 = local.region
+    game_server_host       = local.game_server_host
+    repo_url               = var.repo_url
+    repo_ref               = var.repo_ref
+    service_command        = var.service_command
+    install_command        = var.install_command
+    worker_count           = var.worker_count
+    allowed_origins        = local.allowed_origins
+    drain_max_seconds      = var.drain_max_seconds
+    health_timeout_seconds = var.health_timeout_seconds
+    secret_parameter_path  = var.secret_parameter_path
+    secret_names           = join(" ", var.secret_names)
+    metrics_namespace      = local.metrics_namespace
+    metrics_service        = local.metrics_service
   })
   metadata_options {
     http_tokens = "required"
@@ -111,7 +161,7 @@ resource "aws_instance" "game" {
     delete_on_termination = true
   }
   tags       = { Name = "${var.project}-game" }
-  depends_on = [aws_iam_role_policy_attachment.ssm]
+  depends_on = [aws_iam_role_policy_attachment.ssm, aws_iam_role_policy.game_runtime]
 }
 
 resource "aws_eip" "game" {
@@ -159,6 +209,42 @@ resource "aws_cloudwatch_metric_alarm" "status" {
   dimensions          = { InstanceId = aws_instance.game.id }
   alarm_actions       = [aws_sns_topic.operations.arn]
   ok_actions          = [aws_sns_topic.operations.arn]
+}
+
+# 게임 지표 경보(서버 안 fps-metrics.timer가 60초마다 올리는 값)
+resource "aws_cloudwatch_metric_alarm" "tick_p95" {
+  alarm_name          = "${var.project}-game-tick-p95"
+  alarm_description   = "Game tick p95 above ${var.tick_p95_alarm_ms} ms for 5 minutes (30 Hz budget)"
+  namespace           = local.metrics_namespace
+  metric_name         = "TickP95Ms"
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 5
+  datapoints_to_alarm = 5
+  threshold           = var.tick_p95_alarm_ms
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions          = { Service = local.metrics_service }
+  alarm_actions       = [aws_sns_topic.operations.arn]
+  ok_actions          = [aws_sns_topic.operations.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "healthz" {
+  alarm_name          = "${var.project}-game-healthz"
+  alarm_description   = "Game server /healthz failing (or metrics agent silent) for 3 minutes"
+  namespace           = local.metrics_namespace
+  metric_name         = "HealthCheckOk"
+  statistic           = "Minimum"
+  period              = 60
+  evaluation_periods  = 3
+  datapoints_to_alarm = 3
+  threshold           = 1
+  comparison_operator = "LessThanThreshold"
+  # 값이 안 오면(서버·수집기가 죽음) 실패로 본다
+  treat_missing_data = "breaching"
+  dimensions         = { Service = local.metrics_service }
+  alarm_actions      = [aws_sns_topic.operations.arn]
+  ok_actions         = [aws_sns_topic.operations.arn]
 }
 
 resource "aws_budgets_budget" "monthly" {

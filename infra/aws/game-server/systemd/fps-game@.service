@@ -1,0 +1,36 @@
+# Date: 06NOV2026
+# Author: Minkyu Jung
+# Purpose: 게임 서버 프로세스 하나(인스턴스 이름 = 슬롯+순번, 예 a1). 코어 하나에 하나씩 deploy.sh가 띄운다.
+#          비밀 값은 fps-secrets가 SSM에서 읽어 만든 /run/fps/secrets.env로만 받는다.
+[Unit]
+Description=Game server worker %i
+After=network-online.target fps-secrets.service
+# Requires가 아니라 Wants: 비밀 값을 다시 읽을 때(fps-secrets 재시작) 도는 게임이 같이 재시작되지 않게 한다
+Wants=network-online.target fps-secrets.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=fps
+Group=fps
+EnvironmentFile=/etc/fps/game.env
+EnvironmentFile=/run/fps/secrets.env
+ExecStart=/usr/local/lib/fps/run-game.sh %i
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=15
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/fps
+
+[Install]
+WantedBy=multi-user.target

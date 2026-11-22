@@ -1,0 +1,13 @@
+# Date: 06NOV2026
+# Author: Minkyu Jung
+# Purpose: 지표 수집(fps-metrics.service)을 부팅 1분 뒤부터 60초마다 부른다.
+[Unit]
+Description=Push game server metrics every 60 seconds
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target

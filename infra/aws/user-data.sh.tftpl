@@ -1,10 +1,11 @@
 #!/bin/bash
 # Date: 06NOV2026
 # Author: Minkyu Jung
-# Purpose: 공식 arm64 실행 파일과 저장소를 설치하고 Node·TLS 프록시를 서비스로 시작한다.
+# Purpose: 공식 arm64 Node·Caddy와 저장소를 설치하고, 운영 값 파일을 쓴 뒤 저장소의 game-server/deploy.sh로 첫 게임 서버 버전을 띄운다.
+#          비밀 값은 여기 넣지 않는다. 서버가 SSM Parameter Store에서 직접 읽는다(fps-secrets.service).
 set -euo pipefail
 
-dnf install -y git tar xz gzip curl-minimal
+dnf install -y git tar xz gzip curl-minimal awscli-2
 systemctl enable --now amazon-ssm-agent
 install -d /var/tmp/fps-bootstrap
 cd /var/tmp/fps-bootstrap
@@ -25,41 +26,35 @@ install -m 0755 caddy /usr/local/bin/caddy
 
 useradd --system --home-dir /var/lib/fps --create-home --shell /sbin/nologin fps
 useradd --system --home-dir /var/lib/caddy --create-home --shell /sbin/nologin caddy
-git clone --no-checkout '${repo_url}' /opt/fps
-git -C /opt/fps checkout --detach '${repo_ref}'
-chown -R fps:fps /opt/fps
 install -d -o caddy -g caddy /etc/caddy /var/lib/caddy
-cat > /etc/caddy/Caddyfile <<'CADDY'
-${game_server_host} {
-    reverse_proxy 127.0.0.1:8788
-}
-CADDY
-cat > /etc/systemd/system/fps.service <<'UNIT'
-[Unit]
-Description=Game Node service
-After=network-online.target
-Wants=network-online.target
-[Service]
-Type=simple
-User=fps
-Group=fps
-WorkingDirectory=/opt/fps
-Environment=NODE_ENV=production
-ExecStart=${service_command}
-Restart=on-failure
-RestartSec=5
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/fps
-[Install]
-WantedBy=multi-user.target
-UNIT
+install -d -m 0755 /etc/fps /etc/fps/state /opt/fps /opt/fps/releases
+
+# 운영 값(비밀 아님). 바꾸려면 Terraform 변수를 고쳐 apply한다(서버가 새로 만들어진다)
+cat > /etc/fps/deploy.env <<'ENV'
+AWS_REGION=${region}
+FPS_GAME_HOST=${game_server_host}
+FPS_SERVICE_COMMAND="${service_command}"
+FPS_INSTALL_COMMAND="${install_command}"
+FPS_WORKERS=${worker_count}
+FPS_DRAIN_MAX_SECONDS=${drain_max_seconds}
+FPS_HEALTH_TIMEOUT_SECONDS=${health_timeout_seconds}
+FPS_SECRET_PARAMETER_PATH=${secret_parameter_path}
+FPS_SECRET_NAMES="${secret_names}"
+FPS_METRICS_NAMESPACE=${metrics_namespace}
+FPS_METRICS_SERVICE=${metrics_service}
+ENV
+# 게임 프로세스에만 넘기는 값
+cat > /etc/fps/game.env <<'ENV'
+NODE_ENV=production
+LOG_LEVEL=info
+ALLOWED_ORIGINS=${allowed_origins}
+ENV
+chmod 0644 /etc/fps/deploy.env /etc/fps/game.env
+
 cat > /etc/systemd/system/caddy.service <<'UNIT'
 [Unit]
 Description=Game HTTPS reverse proxy
-After=network-online.target fps.service
+After=network-online.target
 Wants=network-online.target
 [Service]
 Type=notify
@@ -71,6 +66,7 @@ ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --adapter c
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=5
+LimitNOFILE=65536
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
@@ -82,4 +78,15 @@ ReadWritePaths=/var/lib/caddy
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable --now fps caddy
+
+# 저장소는 root 소유로 둔다(게임 계정은 릴리스 폴더를 읽기만 한다). 이후 배포는 SSM 배포 문서가 태그를 받아 온다
+git clone --no-checkout '${repo_url}' /opt/fps/src
+ref='${repo_ref}'
+sha=$(git -C /opt/fps/src rev-parse --verify --quiet "$ref^{commit}" || git -C /opt/fps/src rev-parse --verify "origin/$ref^{commit}")
+git -C /opt/fps/src -c advice.detachedHead=false checkout --quiet --force --detach "$sha"
+if [ ! -f /opt/fps/src/infra/aws/game-server/deploy.sh ]; then
+  echo "repo_ref $ref에 infra/aws/game-server/deploy.sh가 없습니다. 게임 서버 배포 구성이 들어간 커밋을 넣으세요" >&2
+  exit 1
+fi
+# 첫 버전: 새 프로세스 → /healthz 확인 → Caddy 시작. 실패하면 cloud-init 로그(/var/log/cloud-init-output.log)에 남는다
+bash /opt/fps/src/infra/aws/game-server/deploy.sh "$sha" "$ref"

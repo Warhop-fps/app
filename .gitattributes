@@ -3,3 +3,6 @@ tools/hooks/* text eol=lf
 # 서버에서 sh가 읽는 템플릿은 Windows에서 받아도 LF로 둔다(terraform templatefile은 작업 파일을 읽는다)
 *.tftpl text eol=lf
 *.sh text eol=lf
+# 게임 서버 systemd 유닛도 서버가 그대로 읽는다(infra/aws/game-server/systemd)
+*.service text eol=lf
+*.timer text eol=lf

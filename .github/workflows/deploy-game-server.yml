@@ -1,0 +1,90 @@
+# Date: 06NOV2026
+# Author: Minkyu Jung
+# Purpose: game-server-v* 태그를 검사한 뒤 OIDC 역할로 서울 서버에 SSM 배포 문서를 보내 무중단으로 바꾸고, 변수가 없으면 안전하게 건너뛴다.
+#          되돌리기 = 이전 태그로 이 작업을 다시 실행(Run workflow에서 "Use workflow from"을 이전 태그로). docs/GAME_SERVER_DEPLOY_SOP.md
+name: Deploy game server
+on:
+  push:
+    tags: ['game-server-v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: game-server-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ROLE_ARN: ${{ vars.AWS_GAME_DEPLOY_ROLE_ARN }}
+      INSTANCE_ID: ${{ vars.GAME_SERVER_INSTANCE_ID }}
+      DOCUMENT: ${{ vars.GAME_SERVER_DEPLOY_DOCUMENT }}
+      GAME_URL: ${{ vars.GAME_SERVER_URL }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      # AWS 역할은 game-server-v* 태그에서만 맡을 수 있다. 브랜치에서 수동 실행하면 여기서 멈춘다
+      - name: Require a release tag
+        if: github.ref_type != 'tag' || !startsWith(github.ref_name, 'game-server-v')
+        run: |
+          echo "::error::Run this from a game-server-v* tag (Run workflow -> Use workflow from -> Tags). Current ref: ${GITHUB_REF}"
+          exit 1
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm run check
+      - name: Check deployment settings
+        id: config
+        run: |
+          if [ -z "$ROLE_ARN" ] || [ -z "$INSTANCE_ID" ] || [ -z "$DOCUMENT" ]; then
+            echo '::notice::Game server deployment skipped - set repository variables AWS_GAME_DEPLOY_ROLE_ARN, GAME_SERVER_INSTANCE_ID and GAME_SERVER_DEPLOY_DOCUMENT (terraform output).'
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+          elif ! printf '%s' "$TAG" | grep -Eq '^game-server-v[0-9A-Za-z._-]{1,64}$'; then
+            echo "::error::Tag name $TAG does not match game-server-v[0-9A-Za-z._-]"
+            exit 1
+          else
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Assume deploy role (OIDC)
+        if: steps.config.outputs.ready == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_GAME_DEPLOY_ROLE_ARN }}
+          role-session-name: game-deploy-${{ github.run_id }}
+          aws-region: ap-northeast-2
+      # 서버 안에서: 태그 받기 → 새 프로세스 → /healthz 확인 → Caddy 전환 → 옛 프로세스 비우기(infra/aws/game-server/deploy.sh)
+      - name: Run deploy document on the server (SSM)
+        if: steps.config.outputs.ready == 'true'
+        run: |
+          command_id=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "$DOCUMENT" \
+            --parameters "tag=$TAG" \
+            --comment "game server $TAG run ${GITHUB_RUN_ID}" \
+            --timeout-seconds 600 \
+            --query Command.CommandId --output text)
+          echo "SSM command: $command_id"
+          status=Pending
+          for _ in $(seq 1 120); do
+            sleep 10
+            status=$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" --query Status --output text 2>/dev/null || echo Pending)
+            echo "status: $status"
+            case "$status" in
+              Pending|InProgress|Delayed) ;;
+              *) break ;;
+            esac
+          done
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" --query StandardOutputContent --output text || true
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" --query StandardErrorContent --output text >&2 || true
+          if [ "$status" != Success ]; then
+            echo "::error::Deploy of $TAG ended with $status. The previous version keeps running unless the log says otherwise."
+            exit 1
+          fi
+          echo "::notice::Deployed $TAG. Old workers drain in the background on the server."
+      - name: Check public /healthz
+        if: steps.config.outputs.ready == 'true' && env.GAME_URL != ''
+        run: curl --fail --silent --show-error --retry 10 --retry-delay 3 --retry-all-errors --max-time 5 "$GAME_URL/healthz"
