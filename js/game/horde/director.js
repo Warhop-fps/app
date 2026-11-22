@@ -1563,6 +1563,8 @@ export function createHorde(o = {}) {
   function stepProjectiles(dt, ev) {
     const bounced = [];
     for (let i = projectiles.length - 1; i >= 0; i--) {
+      // 투사체에 마지막 사람이 쓰러지면 gameOver가 목록을 비운다. 남은 번호를 읽지 않고 멈춘다(예전에는 여기서 TypeError로 틱이 끊겼다)
+      if (S.phase === 'over') return;
       const pr = projectiles[i];
       const p0 = pr.pos.slice();
       if (pr.arc) pr.vel[1] += GRAVITY * dt;
@@ -1617,6 +1619,8 @@ export function createHorde(o = {}) {
   }
   function stepHazards(dt, ev) {
     for (let i = hazards.length - 1; i >= 0; i--) {
+      // 장판에 마지막 사람이 쓰러지면 gameOver가 목록을 비운다. 남은 번호를 읽지 않고 멈춘다(예전에는 여기서 TypeError로 틱이 끊겼다)
+      if (S.phase === 'over') return;
       const h = hazards[i];
       if (S.clock >= h.until) { hazards.splice(i, 1); continue; }
       if (!(h.dps > 0)) continue;
