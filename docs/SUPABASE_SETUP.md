@@ -19,7 +19,7 @@ Supabase 프로젝트를 게임에 연결하는 절차입니다.
 ## 2. 스키마 실행
 
 1. 왼쪽 메뉴에서 **SQL Editor**를 열고 새 쿼리를 만듭니다.
-2. 저장소의 `supabase/schema.sql` 내용을 **전부** 붙여 넣고 실행합니다.
+2. 저장소의 `supabase/schema.sql` 내용을 **전부** 붙여 넣고 실행합니다. (새 프로젝트 전용. 모든 마이그레이션 번호를 이어 붙인 사본이라 번호 기록도 함께 남습니다)
 3. 오류 없이 끝나면 **Table Editor**에 `fps_players` 테이블이 보입니다.
 
 여러 번 실행해도 안전합니다. 테이블과 데이터는 그대로 두고 함수만 다시 만듭니다.
@@ -144,7 +144,7 @@ const c = SKALA_CONFIG.supabase; await (await fetch(`${c.url}/rest/v1/rpc/fps_ch
   - `0028_anon_security_definer_function_executable`, `0029_authenticated_security_definer_function_executable`(WARN): `fps_*` RPC 여덟 개가 대상입니다. 게임이 로그인 없이 부르는 유일한 통로이고, 각 함수가 입력을 검사합니다(`fps_features`는 입력이 없고 고정 값만 돌려준다).
 - **포인트와 전적은 한도 안에서만 늡니다.** 브라우저가 계산해 보내지만, 서버가 늘어나는 속도(포인트 1초 5점·최대 5,000·하루 50,000, 킬 1초 1번, 승리 30초 1번)와 새로 산 무기의 가격을 확인해 넘는 만큼은 버립니다. 자세한 내용은 [docs/SECURITY.md](SECURITY.md).
 - **닉네임 등록은 같은 IP에서 한 시간에 60번까지입니다.** 넘으면 `RATE_LIMITED`를 돌려주고, 게임은 잠시 뒤 다시 시도합니다. IP 원문은 저장하지 않고 해시만 셉니다(`fps_rate`).
-- **`schema.sql`을 고친 뒤에는 SQL Editor에서 전부 다시 실행하세요.** 여러 번 실행해도 안전하고, 기존 행에는 새 칸의 기본값이 채워집니다.
+- **2026-11-23부터 DB 변경은 번호 파일(`supabase/migrations/NNNN_*.sql`)로 한다.** `schema.sql`은 번호 파일을 이어 붙인 자동 사본이라 직접 고치지 않는다. 이미 쓰는 서버에는 아직 실행하지 않은 번호 파일만 실행하고 `select max(version) from public.fps_schema_migrations;`로 확인한다([docs/DB_MIGRATION_SOP.md](DB_MIGRATION_SOP.md)). 아래의 "`schema.sql` 다시 실행"은 그 전의 방식이며, 지금 해도 안전하다(여러 번 실행해도 되고 번호도 모두 적힌다).
 - **캐릭터 구매는 `schema.sql`을 다시 실행해야 열립니다.** 게임은 시작할 때 `fps_features`를 묻고 `avatars:true`일 때만 상점 캐릭터 탭의 구매 버튼을 켭니다. 그 전에는 "캐릭터 구매는 서버 업데이트 뒤에 열려요"를 보여 주고, 기본 캐릭터와 이미 가진 캐릭터는 그대로 입을 수 있습니다. 옛 `fps_save_profile`은 가격표에 없는 물건을 버리면서 줄어든 포인트는 받아들이므로, 구매를 막지 않으면 산 포인트만 잃기 때문입니다. 실행하면 새로 배포하지 않아도 다음 접속부터 구매가 열립니다.
 - **건의함도 `schema.sql`을 다시 실행해야 열립니다.** 그 전에는 건의하기 시트가 "건의함이 아직 열리지 않았어요"를 보여 주고 보내기를 막습니다. 읽기·답하기·차단은 [docs/FEEDBACK.md](FEEDBACK.md).
 - **계정은 기기 토큰입니다.** 브라우저 저장소의 `skalafps.token`이 곧 소유 증명이고, 서버에는 sha256만 저장합니다. 사이트 데이터를 지우면 토큰이 사라져 이전 닉네임을 되찾을 수 없습니다. 이때는 아래처럼 운영자가 풀어 줄 수 있습니다.
