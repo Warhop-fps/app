@@ -1,7 +1,7 @@
 <!--
   Date: 06NOV2026
   Author: Minkyu Jung
-  Purpose: 실서버 Supabase에 번호 마이그레이션(supabase/migrations/0001·0002)을 적용하고 API Worker를 다시 배포하는 절차(SOP).
+  Purpose: 실서버 Supabase에 번호 마이그레이션(supabase/migrations/0001·0002·0003)을 적용하고 API Worker를 다시 배포하는 절차(SOP).
            용어 풀이, 값 지도, 단계별 절차와 성공 모습, 실패 시 표. 새 번호 파일을 만드는 법과 사용 기록(fps_events) 읽는 법도 적는다.
 -->
 # DB 마이그레이션 적용 (SOP)
@@ -18,6 +18,7 @@
 | `fps_schema_migrations` | "어느 번호까지 실행했나"를 적는 표. 파일마다 맨 끝에서 자기 번호를 한 줄 넣는다. 같은 파일을 두 번 실행해도 한 줄이다 |
 | 0001 기준선(baseline) | 11-23까지의 `schema.sql` 전체 + 위 번호 표. 실서버에는 내용이 이미 있으므로 실행해도 **바뀌는 것은 없고 번호 1만 적힌다** |
 | 0002 사용 기록(events) | 익명 사용 기록 표 `fps_events`와 그것을 넣는 함수 `fps_api_log_events`. 게임 → API Worker `POST /v1/events` → 이 함수 |
+| 0003 경기 결과(match_results) | 게임 서버가 서명한 경기 결과 표 `fps_match_results`, 사람마다 더한 포인트 장부 `fps_match_points`, 그것을 넣는 함수 `fps_api_apply_match_result`. 게임 서버 → API Worker `POST /v1/match-result` → 이 함수(`docs/MATCH_RESULT_CONTRACT.md`) |
 | `schema.sql` | 이제 **자동으로 만드는 전체 사본**이다(모든 번호 파일을 이어 붙인 것). 직접 고치지 않는다. 새 Supabase 프로젝트를 처음 만들 때만 이 파일 하나를 통째로 실행한다 |
 | SQL Editor | Supabase 대시보드 왼쪽의 SQL Editor. 여기서 실행한 SQL은 소유자 권한으로 바로 실서버에 들어간다 |
 | API Worker | 로그인·결제·사용 기록을 받는 Cloudflare 서버 `skala-api`(`server/api`). DB에는 이 서버만 비밀 키로 쓴다 |
@@ -28,8 +29,9 @@
 | 무엇 | 값 / 자리 |
 |---|---|
 | 실서버 Supabase 주소 | `js/config.js`의 `supabase.url` (`https://tvsoacvbjvggqdgnzijc.supabase.co`) |
-| 실행할 파일 | `supabase/migrations/0001_baseline.sql`, `supabase/migrations/0002_events.sql` (이 순서) |
-| 확인 SQL | `select max(version) from public.fps_schema_migrations;` → `2` |
+| 실행할 파일 | `supabase/migrations/0001_baseline.sql`, `0002_events.sql`, `0003_match_results.sql` (이 순서) |
+| 확인 SQL | `select max(version) from public.fps_schema_migrations;` → `3` |
+| 경기 결과 받는 주소 | `https://skala-api.skala-fps.workers.dev/v1/match-result` (게임 서버만. 서명 값 `GAME_RESULT_SECRET`이 없으면 404) |
 | API Worker 이름·주소 | `skala-api`, `https://skala-api.skala-fps.workers.dev` (`js/config.js`의 `api.url`) |
 | Worker 코드 자리 | `server/api` (배포 명령은 이 폴더에서) |
 | 사용 기록 받는 주소 | `https://skala-api.skala-fps.workers.dev/v1/events` |
@@ -58,14 +60,19 @@ git pull
    - 성공 모습: 아래에 `Success. No rows returned`. (실서버에는 이미 있는 내용이라 데이터는 그대로다)
 3. 새 query를 열고 `0002_events.sql` 전체를 같은 방법으로 **Run**.
    - 성공 모습: `Success. No rows returned`.
-4. 확인:
+4. 새 query를 열고 `0003_match_results.sql` 전체를 같은 방법으로 **Run**.
+   - 성공 모습: `Success. No rows returned`. 이미 1·2를 했다면 이 파일 하나만 하면 된다.
+   - 브라우저 포인트 저장(`p_delta`)은 그대로다. 이 파일은 표와 함수를 더하고, 운영자 조정 기록(`fps_points_log`)의 `actor`에 경기 결과 번호를 적게 할 뿐이다.
+5. 확인:
 
 ```sql
 select version, name, applied_at from public.fps_schema_migrations order by version;
 select max(version) from public.fps_schema_migrations;
 ```
 
-성공 모습: 첫 줄은 `1 baseline`, `2 events` 두 줄, 둘째 줄은 `2`.
+성공 모습: 첫 줄은 `1 baseline`, `2 events`, `3 match_results` 세 줄, 둘째 줄은 `3`.
+
+0003 뒤에는 경기 결과 서명 값을 넣어야 주소가 열린다: `docs/GAME_RESULT_SECRET_SOP.md` 3절(Worker 배포 3-3 뒤에).
 
 ### 3-3. API Worker 다시 배포
 
@@ -130,6 +137,10 @@ from public.fps_events where name = 'error' order by id desc limit 30;
 | 0002 실행 중 `relation "public.fps_schema_migrations" does not exist` | 0001을 먼저 안 했다 | 0001을 실행한 뒤 0002를 다시 실행한다 |
 | `max(version)`이 `null`이거나 표가 없다는 오류 | 0001을 아직 안 했다 | 3-2의 2번부터 |
 | `max(version)`이 1 | 0002를 아직 안 했다 | 3-2의 3번 |
+| `max(version)`이 2 | 0003을 아직 안 했다 | 3-2의 4번 |
+| 0003 실행 중 `relation "public.fps_players" does not exist` | 0001을 안 했거나 다른 프로젝트에 실행했다 | 프로젝트 주소 확인, 0001부터 |
+| `/v1/match-result` **404** | Worker가 옛 코드이거나 `GAME_RESULT_SECRET`이 없다 | 3-3, 그 다음 `docs/GAME_RESULT_SECRET_SOP.md` |
+| `/v1/match-result` **503** `DB_MISSING` | 0003을 안 했다 | 3-2의 4번. 그래도면 `notify pgrst, 'reload schema';` |
 | 실행 중 다른 오류가 났다 | 붙여 넣기가 잘렸거나 다른 프로젝트에 실행했다 | 프로젝트 주소를 확인하고 파일 **전체**를 다시 복사해 처음부터 실행한다. 여러 번 실행해도 안전하다 |
 | `npm run deploy`가 `not logged in`·`Authentication error` | wrangler 로그인이 풀렸다 | `npx wrangler login` 뒤 다시 배포 |
 | `/features`에서 `"db":false` | Worker 비밀 키(`SUPABASE_SECRET_KEY`)가 없거나 틀렸다 | `server/api/README.md` 5절대로 secret을 다시 넣고 배포 |
