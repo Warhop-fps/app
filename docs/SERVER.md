@@ -2,7 +2,7 @@
   Date: 06NOV2026
   Author: Minkyu Jung
   Purpose: 권위 서버 시제품(server/)의 구조, 프로토콜, 틱·되감기 설계, 입력 검증, 운영 지표, 브라우저 클라이언트를 붙이는 계획, 배포 계획(실행 환경 고르기·systemd·Caddy·Grafana Cloud·GitHub Actions·Durable Objects),
-           서버가 판정하는 개인전, 프로세스 나누기 계획, 개발 PC 부하 측정, 브라우저 접속 모듈.
+           서버가 판정하는 개인전, 프로세스 나누기 계획, 개발 PC 부하 측정, 브라우저 접속 모듈, 좀비 방과 그 측정.
 -->
 # 권위 서버 시제품
 
@@ -489,6 +489,7 @@ DO 어댑터는 `server-do/`처럼 따로 두고(Worker 템플릿의 `src/index.
 - 방 하나는 프로세스 하나 안에 있다. 사람이 많아지면 방을 여러 프로세스(또는 VM)에 나누고 방을 찾아 주는 로비가 필요하다.
 - 부하는 개발 PC에서만 쟀다(14절). EC2 서울에서 같은 명령으로 다시 재야 VM 한 대가 받을 방 수를 정할 수 있다.
 - 포인트는 서버가 계산만 하고 저장하지 않는다(12절).
+- 좀비 방(16절)은 서버에서 돌지만 브라우저 화면은 아직 붙지 않는다. 판 끝 요약은 `onHordeMatchEnd`로만 나온다.
 
 ## 12. 서버가 판정하는 개인전 (11-23)
 
@@ -554,3 +555,45 @@ npm run server:load -- --url ws://127.0.0.1:8790 --rooms 4 --bots 8 --seconds 18
 - 판·키 비트·줄 칸·닫기 코드는 `js/net/gameproto.js` 하나에 있고 서버(`server/core/protocol.js`)가 그대로 다시 내보낸다.
 - 시험: `tests/gameserver-client.test.mjs`(켜는 조건, 오류, 같은 약속), `server/test/client.test.mjs`(실제 서버에 붙어 welcome·ack·거절·버전 오류).
 - **남은 일**(8절 3~7): 세션에 붙이기(방장 판정 끄기, 서버 이벤트로 화면 그리기), 예측·보정, 원격 아바타 보간, `index.html` CSP `connect-src`에 게임 서버 주소 더하기(주소가 정해질 때).
+
+## 16. 좀비 방 (11-23)
+
+`join.opts.mode = 'zombie'`로 처음 만든 방은 좀비 물량 막기 방(`server/core/horde-room.js`)이다. 자세한 설명은 `docs/HORDE_SERVER.md` 8절.
+
+- 맵은 `restarea`·`subway`만(다른 맵을 고르면 `restarea`). 정원 4명(5번째는 4001). 방장(먼저 들어온 사람)의 `start`로 시작하고, 끝나면 다시 `start`.
+- 서버 틱마다 화면 없는 좀비 방(`js/game/horde/sim/room.js`)을 한 칸씩 돌린다. 씨앗은 서버가 판마다 정한다.
+- 손님 형식 `zs`·`zhit`·`zswing`·`zboom`·`zcard`·`zloot`·`zrev`(검사 `server/core/horde-protocol.js`), 서버 형식 `zlobby`·`zev`(이벤트, 번호 `eid`)·`zsnap`(10 Hz, 최근 3초의 꼭 닿아야 하는 이벤트를 다시 싣는다).
+  판 번호(`PROTOCOL` 2)는 그대로다. 개인전·팀전 방은 좀비 형식을 버린다.
+- 판 끝: `startServer({ onHordeMatchEnd(summary) })`. 결과 서명·저장은 아직 없다(개인전 결과 보내기가 들어오면 여기에 잇는다).
+- 측정용 설정: `--horde-start-stage <n>`(시작 스테이지), `--horde-prep-sec <n>`(준비 시간). 손님은 고를 수 없다.
+- 시험: `tests/horde-server-room.test.mjs`(소켓 없이), `server/test/horde.test.mjs`(127.0.0.1, 봇 4명이 보스 스테이지를 끝낸다, 약 30초).
+
+## 17. 좀비 측정 (2026-11-23, 개발 PC)
+
+> **EC2가 아니다.** 14절과 같은 개발 PC(Windows 11, Intel Core Ultra 5 125H, 메모리 16 GB, Node 24)에서 서버와 가짜 손님을 **같은 PC**에서 돌렸다. 네트워크는 루프백, 가짜 손님이 한쪽 30 ms 지연을 넣는다.
+> EC2(작은 VM)에서는 숫자가 더 나쁠 수 있다. 같은 명령으로 다시 잰다.
+
+재는 법(판마다 서버를 새로 띄웠다):
+
+```bash
+npm run server -- --port 8790 --host 127.0.0.1 --max-per-ip 1000 --max-rooms-per-ip 100 --max-rooms 100 --log-level warn
+npm run server:load -- --url ws://127.0.0.1:8790 --mode zombie --map restarea --rooms 4 --seconds 200 --json
+```
+
+- 방마다 대본 봇 손님 4명(`server/tools/horde-client.js`가 `js/game/horde/sim/bots.js`를 돌린다). 1스테이지부터 실제 시간으로 200초: 준비 12초 → 6스테이지까지, 방마다 보스 2번(3·6스테이지).
+- 5초마다 서버 `/healthz`. 앞 10초는 데우기로 뺐다. 틱 p50은 표본 평균, p95·최대는 가장 나쁜 30초 창, CPU는 10초 평균(한 코어 = 100%).
+
+| 맵 · 방 × 사람 | 틱 p50 | 틱 p95 | 틱 최대 | CPU 평균 / 최대 | RSS 최대 | 보낸 양(전체) | 1인당 보낸 양 | 스냅샷 최대 |
+|---|---|---|---|---|---|---|---|---|
+| restarea 1 × 4 (4명) | 0.13 ms | 1.91 ms | 61.6 ms | 2.1% / 4.2% | 90 MB | 41 KB/s | 10.2 KB/s | 2.0 KB |
+| restarea 4 × 4 (16명) | 1.15 ms | 5.13 ms | 85.7 ms | 5.6% / 10.9% | 123 MB | 176 KB/s | 11.0 KB/s | 2.1 KB |
+| restarea 8 × 4 (32명) | 2.09 ms | 6.18 ms | 60.8 ms | 10.1% / 25.5% | 128 MB | 352 KB/s | 11.0 KB/s | 2.2 KB |
+| subway 4 × 4 (16명) | 0.84 ms | 2.85 ms | 52.6 ms | 5.4% / 11.5% | 103 MB | 176 KB/s | 11.0 KB/s | 2.4 KB |
+
+읽는 법:
+
+- 틱 p95는 8방(32명)에서도 30 Hz 예산(33 ms)의 5분의 1쯤이다. 좀비 방 하나는 평소 약 0.15~0.3 ms다.
+- **틱 최대 50~85 ms는 판 시작 때다.** 좀비 방은 판마다 충돌 월드·길찾기 격자를 새로 만든다(맵 하나 약 50 ms). 그 틱은 같은 프로세스의 다른 방도 기다린다. 방이 많아지면 대기실에서 미리 만들거나 다른 스레드로 옮긴다(`docs/HORDE_SERVER.md` 8.7절).
+- 1인당 약 11 KB/s(약 90 kbit/s)로 개인전(약 28 KB/s)의 40%다. 목표 40 KB/s 아래라 줄이지 않았다. 스테이지마다의 양과 좀비가 상한(34)까지 쌓인 경우는 `docs/HORDE_SERVER.md` 8.5절(`server/tools/horde-wire.js`, 1초 최대 약 25 KB/s).
+- 4방 한 달 내내(16명) 보내는 양은 약 460 GB다.
+- 네 번 모두 건너뛴 틱 0, 서버 경고·오류 로그 0.
