@@ -7,6 +7,8 @@
 
 현재 운영 주소는 아직 바꾸지 않았다. `docs/PRODUCT_PLAN.md` §3.2·§6·§7.2에 따른 준비 도구다. 아래 `example.io`는 예시이며 실제 구매한 이름으로 바꾼다. 기본 배치는 게임 `example.io`, API `api.example.io`, 로비 중계 `relay.example.io`, AWS 게임 서버 `game.example.io`다.
 
+> **2026-11-22 결정: 게임 정적 파일은 Cloudflare Pages가 아니라 AWS CloudFront + S3로 간다**(AWS 지원금 승인). 2절은 [AWS_STATIC_SOP.md](AWS_STATIC_SOP.md)로 바뀌었다. 도메인 구매·DNS는 그대로 Cloudflare이고, 로그인·결제 API(`skala-api`)·중계(`skala-relay`)도 Cloudflare Worker에 남는다. 아래에서 "Pages"라고 남은 곳은 CloudFront로 읽는다.
+
 **목표: 사전 계정·키·프로젝트 준비 후 약 1시간의 작업으로 이전.** 도메인 등록·DNS/인증서 전파·OAuth 게시 심사·지원금 승인은 별도 대기 시간이 든다. 이 작업은 서버 판정 구현이나 실결제 전환을 포함하지 않는다.
 
 ## 0. 먼저 준비할 것 (이전 전날)
@@ -15,7 +17,7 @@
 - 현재 배포 커밋과 Pages/Worker 배포 버전, 원래 `js/config.js` URL·Origin 허용 목록·DNS 값을 개인 운영 기록에 보관한다. 이전 전 커밋에 태그를 달아 롤백 위치를 정한다.
 - **기존 사용자는 이전 전에 구글/카카오 계정을 연결하도록 공지한다.** 브라우저 localStorage의 기기 토큰은 다른 origin으로 자동 이동하지 않는다. 연결 계정이 없는 사용자는 새 주소에서 같은 진행 상황을 자동 복구할 수 없다. 토큰을 URL/채팅으로 옮기거나 모으지 않는다. 기존 사이트를 남기고 계정 연결 경로를 유지한다.
 - 출시 이름은 소유자가 결정한다. 상표 확인 후 `js/core/brand.js`의 `BRAND.name`/`BRAND.nameEn`만 고친다. 도메인을 바꾸는 도구는 브랜드를 고르지 않는다.
-- 저장소 변수 `CLOUDFLARE_PAGES_PROJECT`에 만들 프로젝트 이름(소문자·숫자·하이픈)을 넣을 준비를 한다.
+- AWS 정적 사이트(`infra/aws/static`)를 미리 만들어 `dxxxx.cloudfront.net`에서 열리는지 확인해 둔다(AWS_STATIC_SOP.md 4·5절). 저장소 변수 `CLOUDFLARE_PAGES_PROJECT`는 넣지 않는다.
 
 ## 1. 도메인 구매 (약 10분, 구매 승인 제외)
 
@@ -23,7 +25,11 @@
 2. 등록자 정보·결제·자동 갱신·이메일 인증을 마친다. 기존 도메인을 옮기는 경우에는 Cloudflare 네임서버 활성화를 먼저 끝낸다.
 3. 현재 DNS를 내보내 보관하고 메일(MX/TXT) 등 기존 레코드는 지우지 않는다. TLS 모드는 Full (strict)을 유지한다.
 
-## 2. Pages 프로젝트와 배포 자격 준비 (약 10분)
+## 2. 정적 사이트 준비: CloudFront + S3 (약 20분)
+
+2026-11-22부터는 [AWS_STATIC_SOP.md](AWS_STATIC_SOP.md)를 따른다: `infra/aws/static` apply → GitHub 변수 `AWS_STATIC_BUCKET`·`AWS_STATIC_DISTRIBUTION_ID`·`AWS_DEPLOY_ROLE_ARN`·`AWS_STATIC_REGION` → `deploy-aws-static.yml` 첫 배포 → 도메인 인증서(ACM, DNS only 검증 CNAME) → 사이트 CNAME(DNS only). `set-domain`이 `_headers`를 바꾼 뒤에는 머지 전에 다시 apply한다(SOP 7절).
+
+아래 Cloudflare Pages 절차는 예전 계획으로 남겨 둔다. **두 배포를 함께 켜지 않는다**(변수 둘을 함께 넣으면 두 워크플로 모두 실패한다).
 
 1. Workers & Pages → Create → Pages → Direct Upload 방식으로 프로젝트를 만든다. 저장소 이름과 같을 필요는 없다. 프로젝트 production branch는 `main`이다. Git 연동 자동 빌드와 이 워크플로를 동시에 켜서 이중 배포하지 않는다.
 2. GitHub 저장소 Settings → Secrets and variables → Actions:
@@ -78,7 +84,7 @@ npm --prefix server/api run deploy
 npm --prefix server/relay run deploy
 ```
 
-기존 배포 환경의 의존성 설치와 Cloudflare 로그인이 필요하다(각 폴더 README 참고). 그다음 변경을 `main`에 통합해 Pages 워크플로를 실행한다. 이전 동안 중복 결제를 막으려고 DB/가격표/주문 id는 그대로 쓴다.
+기존 배포 환경의 의존성 설치와 Cloudflare 로그인이 필요하다(각 폴더 README 참고). 그다음 `infra/aws/static`을 다시 apply하고(바뀐 `_headers`의 CSP 반영) 변경을 `main`에 통합해 배포 워크플로(`deploy-aws-static.yml`)를 실행한다. 이전 동안 중복 결제를 막으려고 DB/가격표/주문 id는 그대로 쓴다.
 
 ## 5. 기존 GitHub Pages 유지·안내 (약 5분)
 
@@ -112,7 +118,7 @@ npm --prefix server/relay run deploy
 ## 8. 실패 시 롤백
 
 1. 새 결제 시도를 안내로 중단하고 진행 중 주문을 조회한다. DB·코인 원장·구매 id를 되돌리거나 초기화하지 않는다. 결제 웹훅/cron 대사는 계속 유지한다.
-2. Pages 대시보드에서 이전 정상 배포를 Rollback한다. 첫 도메인 이전이라 이전 Pages 배포가 없으면 기존 GitHub Pages 주소를 안내한다. 로컬에서도 기록해 둔 **이전 버전 파일**로 config/CSP/Origin/README/privacy를 복원한다. `set-domain --domain <github.io>`로는 `/skala-fps/` 경로를 표현할 수 없으므로 되돌리는 도구로 쓰지 않는다.
+2. 정적 사이트는 main에서 문제 커밋을 `git revert`해 다시 배포하거나 S3 버전으로 되돌린다(AWS_STATIC_SOP.md 10절). 첫 도메인 이전이라 정상 배포가 없으면 기존 GitHub Pages 주소를 안내한다. 로컬에서도 기록해 둔 **이전 버전 파일**로 config/CSP/Origin/README/privacy를 복원한다. `set-domain --domain <github.io>`로는 `/skala-fps/` 경로를 표현할 수 없으므로 되돌리는 도구로 쓰지 않는다.
 3. Workers의 이전 정상 버전을 복구하거나 이전 config를 배포한다. 새 Origin을 바로 지우지 말고 복구 중인 결제/OAuth 복귀가 마칠 때까지 병행 허용한다. workers.dev 주소와 기존 Durable Object 데이터를 삭제하지 않는다.
 4. Google/Kakao 기존 Redirect URI·기존 GitHub Origin이 남아 있는지 확인한다. Toss 웹훅은 정상 Worker 주소로 돌리고 결제 승인·환불·중복 지급 여부를 다시 확인한다.
 5. DNS는 기록한 값으로 복원한다. 인증서·DNS 전파 대기 중에는 양쪽 접속 경로를 유지한다. Registrar 등록 자체를 취소하거나 기존 DNS를 전부 삭제하지 않는다.

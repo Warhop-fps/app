@@ -1,6 +1,7 @@
 # Date: 06NOV2026
 # Author: Minkyu Jung
 # Purpose: Pages의 실제 보안 응답 헤더와 정적 자산 캐시 정책을 설정한다.
+#          CloudFront(infra/aws/static)와 S3 업로드(tools/aws-static.mjs)도 이 파일을 그대로 읽는다. 헤더 이름은 한 번씩만 쓴다.
 /*
   Content-Security-Policy: default-src 'self'; script-src 'self' https://cdn.jsdelivr.net https://sdk.crazygames.com 'sha256-TM0KDHAQbO12MKjS7wA+y53W8I0SldAmN++tBE9dMgI='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://images.crazygames.com; font-src 'self' data:; connect-src 'self' https://tvsoacvbjvggqdgnzijc.supabase.co wss://tvsoacvbjvggqdgnzijc.supabase.co https://skala-relay.skala-fps.workers.dev wss://skala-relay.skala-fps.workers.dev https://skala-api.skala-fps.workers.dev https://cza.crazygames.com; media-src 'self' blob: data:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://*.crazygames.com https://crazygames.com capacitor://app.crazygames.com
   X-Content-Type-Options: nosniff

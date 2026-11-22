@@ -5,7 +5,7 @@
  */
 /**
  * 사용법
- *   node tools/build-site.mjs                              dist/ (Cloudflare Pages)
+ *   node tools/build-site.mjs                              dist/ (AWS S3 업로드는 tools/aws-static.mjs, 예전 계획인 Cloudflare Pages도 같은 폴더)
  *   node tools/build-site.mjs --portal crazygames          dist-crazygames/ + dist-crazygames.zip (기본 출시: 광고 꺼짐)
  *   node tools/build-site.mjs --portal crazygames --ads    정식 출시(Full Launch) 제출본: 광고(중간·보상) 켬
  *

@@ -11,7 +11,7 @@
 
 | 항목 | 결정 | 상태 |
 |---|---|---|
-| 서버 구조 | **혼합 구성**: 정적 사이트·로그인·결제 API·로비는 Cloudflare, DB는 Supabase, **서버 판정 게임 서버만 AWS 서울** | 확정 |
+| 서버 구조 | **혼합 구성**: 정적 사이트·로그인·결제 API·로비는 Cloudflare, DB는 Supabase, **서버 판정 게임 서버만 AWS 서울**. 2026-11-22: 정적 사이트도 AWS CloudFront + S3로 바꿈(6절) | 확정 |
 | 게임 엔진 | three.js 유지. 엔진을 바꾸지 않는다 | 확정 |
 | 캐릭터 | **무료(CC0) 모델을 고쳐 쓴다.** 현대 특수부대 세미 리얼 로우폴리(4절) | 확정 |
 | 저작권 정리 | 문제 자산을 모두 바꾸고, **공개 저장소 기록에서도 음원을 지운다** | 확정 |
@@ -84,7 +84,7 @@
 
 | 주소 | 용도 | 어디 |
 |---|---|---|
-| `example.io` | 게임 | Cloudflare Pages |
+| `example.io` | 게임 | AWS CloudFront + S3 (2026-11-22 결정, DNS는 Cloudflare) |
 | `api.example.io` | 로그인·결제 API | Cloudflare Worker `skala-api` |
 | `relay.example.io` | 로비·현재 중계 | Cloudflare Worker `skala-relay` |
 | `game.example.io` | 서버 판정 게임 서버 | AWS EC2 서울 |
@@ -189,7 +189,7 @@
 
 ```mermaid
 flowchart LR
-  U[브라우저 three.js] -->|정적 파일| P[Cloudflare Pages + 내 도메인]
+  U[브라우저 three.js] -->|정적 파일| P[AWS CloudFront + S3 + 내 도메인]
   U -->|로그인·결제| W[CF Worker skala-api]
   U -->|로비·매칭| D[CF Durable Object]
   D -->|방 서버 배정| G[AWS EC2 서울 서버 판정 게임 서버]
@@ -200,7 +200,8 @@ flowchart LR
 ```
 
 - 지금 방식(방장 브라우저가 판정, Cloudflare 중계)은 그대로 두고, 서버 판정 서버가 완성되면 방 단위로 옮긴다.
-- 이전 준비(이번 단계): 주소를 한 번에 바꾸는 도구(`tools/set-domain.mjs`), Cloudflare Pages 배포 설정과 보안 헤더(`_headers`), AWS 인프라 코드(`infra/aws`, Terraform), 절차서(`docs/MIGRATION.md`).
+- 2026-11-22 결정(AWS 지원금 승인): 정적 파일은 Cloudflare Pages 대신 **AWS CloudFront + S3**에 둔다. 로그인·결제 API·로비는 Cloudflare Worker, DB는 Supabase 그대로다. 도메인은 Cloudflare Registrar에서 사고 DNS도 Cloudflare에 두며, CloudFront로 가는 CNAME은 DNS only다.
+- 이전 준비(이번 단계): 주소를 한 번에 바꾸는 도구(`tools/set-domain.mjs`), 보안 헤더(`_headers`, CloudFront 응답 헤더 정책이 이 파일을 그대로 읽음), 정적 사이트 인프라(`infra/aws/static`)와 배포 워크플로(`deploy-aws-static.yml`), 게임 서버 인프라(`infra/aws`), 절차서(`docs/MIGRATION.md`, `docs/AWS_STATIC_SOP.md`).
 - GitHub Pages는 주소를 옮긴 뒤에도 한동안 그대로 두고 새 주소로 안내한다.
 
 ## 7. 비용과 수익

@@ -5,7 +5,7 @@
 -->
 # 서울 게임 서버 운영
 
-`docs/PRODUCT_PLAN.md` §6·§7.2의 AWS 부분이다. **도메인을 사기 전에는 apply하지 않는다.** 정적 사이트·로그인·결제·로비는 Cloudflare, 데이터베이스는 기존 Supabase에 남는다. 이 코드는 기존 URL이나 운영 서버를 바꾸지 않는다.
+`docs/PRODUCT_PLAN.md` §6·§7.2의 AWS 부분이다. **도메인을 사기 전에는 apply하지 않는다.** 로그인·결제·로비는 Cloudflare, 데이터베이스는 기존 Supabase에 남는다. 정적 게임 사이트(CloudFront + S3)는 2026-11-22 결정으로 하위 폴더 `static/`에 **따로** 있다([docs/AWS_STATIC_SOP.md](../../docs/AWS_STATIC_SOP.md)). 상태가 나뉘어 있어 이 폴더의 `destroy`는 사이트를 지우지 않는다. 이 코드는 기존 URL이나 운영 서버를 바꾸지 않는다.
 
 ## 지금 실행하는 서비스
 

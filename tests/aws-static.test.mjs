@@ -33,6 +33,7 @@ test('CloudFront 응답 헤더 정책은 _headers를 직접 읽어 값을 따로
   for (const name of ['Content-Security-Policy', 'Referrer-Policy', 'Permissions-Policy']) {
     const pattern = main.match(new RegExp(`regex\\("(${name}: \\(\\[\\^\\\\r\\\\n\\]\\+\\))"`));
     assert.ok(pattern, `${name}을 _headers에서 regex로 읽어야 한다`);
+    assert.equal(headersText.split(`${name}: `).length, 2, `_headers에 "${name}: "이 한 번만 있어야 Terraform regex가 맞는 줄을 읽는다(주석에도 쓰지 않는다)`);
     assert.equal(headersText.match(new RegExp(`${name}: ([^\\r\\n]+)`))[1].trim(), want[name]);
   }
   assert.ok(!/content_security_policy\s*=\s*"/.test(main), 'CSP 문자열을 main.tf에 직접 적지 않는다');
