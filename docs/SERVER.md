@@ -2,7 +2,8 @@
   Date: 06NOV2026
   Author: Minkyu Jung
   Purpose: 권위 서버 시제품(server/)의 구조, 프로토콜, 틱·되감기 설계, 입력 검증, 운영 지표, 브라우저 클라이언트를 붙이는 계획, 배포 계획(실행 환경 고르기·systemd·Caddy·Grafana Cloud·GitHub Actions·Durable Objects),
-           서버가 판정하는 개인전, 프로세스 나누기 계획, 개발 PC 부하 측정, 브라우저 접속 모듈.
+           서버가 판정하는 개인전, 프로세스 나누기 계획, 개발 PC 부하 측정, 브라우저 접속 모듈, 게임 화면에 붙인 서버 판정 개인전과 방마다 고르기(rollout),
+           경기 결과 서명·보내기.
 -->
 # 권위 서버 시제품
 
@@ -11,7 +12,8 @@
 게임 규칙은 새로 쓰지 않고 브라우저가 쓰는 순수 모듈(`js/engine/physics.js`·`movement.js`·`player.js`, `js/game/match.js`, `js/weapons/*`)을 그대로 불러 쓴다.
 방 규칙(`server/core/room.js`)은 네트워크와 타이머를 모르는 모듈이고, 이번에는 그 위에 VM용 Node WebSocket 어댑터(`server/node.js`, `server/node/`)만 얹었다. Cloudflare Durable Objects는 같은 방 규칙의 다른 어댑터로 붙인다(8.6절).
 
-브라우저 클라이언트는 아직 이 서버에 붙지 않는다. 지금은 가짜 클라이언트(`server/tools/fake-client.js`)가 실제 소켓으로 붙어 한 판을 끝까지 돈다.
+11-23부터 브라우저 게임 화면이 **개인전만** 이 서버에 붙을 수 있다(16절). 게임 서버 주소(`js/config.js` `gameServer.url`)가 비어 있으면 지금처럼 모든 방이 방장 판정이다(배포 값).
+켜는 법·비율·끄는 스위치는 `docs/SERVER_ROLLOUT_SOP.md`. 가짜 클라이언트(`server/tools/fake-client.js`)도 실제 소켓으로 붙어 한 판을 끝까지 돈다.
 
 | 측정(개발 PC, Windows, Node 24) | 값 |
 |---|---|
@@ -53,12 +55,18 @@ npm run server -- --round-sec 30 --loadout-sec 1 --round-end-sec 1 --rounds-to-w
 | `--trust-proxy` | 끔 | X-Forwarded-For를 접속 IP로 본다. 프록시 뒤에서만 |
 | `--log-level`, `LOG_LEVEL` | info | trace~error, silent |
 | `--stats-sec` | 60 | 통계 로그 간격(5절) |
+| `--server-ratio`, `SERVER_ROOM_RATIO` | 0 | 새 방 중 서버 판정 비율 0~1. 0이면 브라우저가 서버 판정 방을 만들지 않는다(16절) |
+| `--rollout-file`, `ROLLOUT_FILE` | 없음 | `{ "ratio": 0.1, "accepting": true }` 파일. 5초마다 다시 읽어 위 값 대신 쓴다(다시 띄우지 않고 비율·끄는 스위치를 바꾼다) |
+| `GAME_RESULT_URL` | 없음 | 경기 결과를 보낼 주소(`…/v1/match-result`). 없으면 결과를 보내지 않는다(17절) |
+| `GAME_RESULT_SECRET` | 없음 | 결과 서명 비밀 값(32글자 이상). 명령줄로는 받지 않는다 |
+| `GAME_SERVER_ID` | `local` | 결과의 `serverId`(예: `ec2-a:1`) |
 
 | HTTP | 내용 |
 |---|---|
 | `GET /room/<id>` (업그레이드) | 게임 WebSocket. 그 밖의 경로는 404 |
 | `GET /healthz` | `{ ok, version, protocol, uptimeSec, hz, ticks, rooms, players, connections, window }`. window = 지난 통계 창(틱 시간·초당 메시지) |
 | `GET /metrics` | Prometheus 텍스트(접속·방·사람 수, 틱 시간 히스토그램, 초당 메시지, 받은·버린·보낸 메시지, 끊은 이유) |
+| `GET /rollout` | `{ ok, protocol, accepting, ratio, why }`. 브라우저가 방을 만들 때 읽는다(CORS `*`, 비밀 없음). why = `off`(끄는 스위치·비율 0) · `full`(방·접속이 상한의 90%) · `closing` |
 
 **시험**은 두 갈래다. 방 규칙을 소켓 없이 직접 돌리는 시험(`tests/room.test.mjs`·`lagcomp.test.mjs`·`room-protocol.test.mjs`, 37개)은 `ws`가 필요 없어 기존 `npm test`(`npm run check`)에 들어 있다.
 WebSocket으로 붙는 시험과 Node 어댑터 부품 시험(`server/test/*.test.mjs`, 25개, 약 25초)은 `npm run test:server`로 따로 돌린다.
@@ -141,7 +149,7 @@ room.size;
 
 | t | 필드 | 뜻 |
 |---|---|---|
-| `join` | `v` 프로토콜, `name`(24자), `team?`, `opts?: { map, mode, ruleset, killTarget }` | 접속 뒤 한 번. opts는 방을 처음 만들 때만 쓴다. killTarget은 개인전 목표 킬(5~20으로 자른다, 없으면 20) |
+| `join` | `v` 프로토콜, `name`(24자), `team?`, `opts?: { map, mode, ruleset, killTarget }`, `tokenHash?` | 접속 뒤 한 번. opts는 방을 처음 만들 때만 쓴다. killTarget은 개인전 목표 킬(5~20으로 자른다, 없으면 20). tokenHash = 기기 토큰의 SHA-256(소문자 hex 64자, 17절). 다른 사람에게 보내지 않는다 |
 | `input` | `seq` 입력 번호, `keys` 누르고 있는 키, `press?` 새로 누른 키, `yaw`, `pitch`, `slot?` 무기 칸, `viewTick?` 그린 틱 | **입력 하나 = 서버 틱 하나(1/30초)** |
 | `pick` | `weapon` 무기 id | 라운드 전 무기 선택(match.setLoadout이 규칙을 본다) |
 | `team` | `team` | 대기실에서만 |
@@ -160,7 +168,7 @@ room.size;
 
 | t | 필드 | 언제 |
 |---|---|---|
-| `welcome` | `playerId`(서버가 정한 신원), `team`, `room`, `hz`, `tick`, `map`, `mode`, `ruleset`, `killTarget`(개인전, 팀전은 null), `leader`, `maxRewindMs`, `row`(줄 칸 이름) | join 직후 |
+| `welcome` | `playerId`(서버가 정한 신원), `team`, `room`, `hz`, `tick`, `map`, `mode`, `ruleset`, `killTarget`(개인전, 팀전은 null), `leader`, `maxRewindMs`, `row`(줄 칸 이름), `paid`(이 사람의 경기 포인트를 서버가 넣는가, 17절) | join 직후 |
 | `snap` | `tick`, `players` 줄 배열, `me` 받는 사람만의 상태 | 틱마다 |
 | `events` | `tick`, `events` 이벤트 배열 | 이벤트가 있던 틱 끝 |
 | `match` | `tick`, `match`(match.snapshot()), `leader`, `ping`(사람별 왕복 ms) | 이벤트가 있을 때와 0.5초마다 |
@@ -481,14 +489,16 @@ DO 어댑터는 `server-do/`처럼 따로 두고(Worker 템플릿의 `src/index.
 
 ## 11. 알려진 한계와 다음 단계
 
-- 브라우저 클라이언트는 접속 모듈(`js/net/gameserver.js`, 15절)만 있고 화면(세션)에는 아직 붙지 않는다(8절).
+- 화면에는 **개인전만** 붙였다(16절). 팀전·폭파 미션·좀비는 서버 판정이 없다(방장 판정 그대로).
+- 내 위치는 간단한 보정만 한다(입력을 다시 돌리지 않는다, 16절). 원격 사람의 보조무기·칼·이모트·캐릭터 장비는 서버가 모른다(서버 actor는 기본 장비 + 고른 주무기).
 - 다시 들어오기가 없다. 끊기면 새 사람이고 그 사람의 기록은 match에 접속 끊김으로 남는다.
 - 인증이 없다. 이름은 아무거나 쓸 수 있다(계정 연결은 8절 9).
 - 시야 걸러내기가 없어 벽 투시를 막지 못한다.
 - 총 버리기·줍기, 이모트, 채팅은 아직 서버에 없다(모르는 형식이라 버린다).
 - 방 하나는 프로세스 하나 안에 있다. 사람이 많아지면 방을 여러 프로세스(또는 VM)에 나누고 방을 찾아 주는 로비가 필요하다.
 - 부하는 개발 PC에서만 쟀다(14절). EC2 서울에서 같은 명령으로 다시 재야 VM 한 대가 받을 방 수를 정할 수 있다.
-- 포인트는 서버가 계산만 하고 저장하지 않는다(12절).
+- 포인트는 서버가 서명한 결과로 넣는다(17절). 입장표(그 해시의 주인임을 증명)는 없다. 남의 해시를 적으면 그 사람이 포인트를 받을 뿐이다(MATCH_RESULT_CONTRACT 1절).
+- 서버가 꺼지면 그때 하던 경기는 무효다(결과가 나가지 않는다). 다시 붙기(reconnect)도 없다.
 
 ## 12. 서버가 판정하는 개인전 (11-23)
 
@@ -502,7 +512,7 @@ DO 어댑터는 `server-do/`처럼 따로 두고(Worker 템플릿의 `src/index.
 | 보상: 킬 10 · 헤드샷 5 · 승리 60 × 목표 킬/20 · 완주 20, 즉시 부활 값은 뺀다 | `economy.matchReward`·`withQuickRespawns`, `js/game/rules/summary.js` `matchSummary` | 경기 끝에 사람마다 `reward { id, summary, reward, quick, cost }`를 그 사람에게만 보낸다(`server/core/rewards.js`) |
 
 - `matchSummary`는 원래 `js/game/session.js` 안에 있었다. 화면·네트워크와 얽힌 파일이라 서버가 부를 수 없어서 순수 모듈 `js/game/rules/summary.js`로 옮겼고, `session.js`는 같은 함수를 다시 내보낸다(브라우저 동작은 그대로. `tests/room-ffa.test.mjs`가 같은 함수인지 본다).
-- **포인트는 아직 서버가 저장하지 않는다.** 서버에는 Supabase 비밀 키가 없고, 계정과 접속을 잇는 인증도 없다(8절 9). 다음 단계: join에 계정 토큰 → 서버가 확인 → 경기 끝에 서버가 `reward`를 경기 id 하나로 한 번만 기록. 그때 클라이언트의 `recordMatch`는 서버 값을 보여 주기만 한다.
+- **포인트는 서버가 서명한 결과로 넣는다**(17절). join의 `tokenHash`로 사람을 잇고, 경기 끝에 같은 보상 값으로 결과를 만들어 API Worker로 보낸다. 그런 사람(`welcome.paid`, `reward.server`)의 브라우저는 `recordMatch(summary, { serverJudged: true })`로 전적만 쌓고 포인트는 더하지 않는다.
 - 시험: 소켓 없이 `tests/room-ffa.test.mjs`(목표 킬 자르기, 즉시 부활과 거절, 보상 숫자, 받은 줄 순서), 소켓으로 `server/test/ffa.test.mjs`(가짜 클라이언트 넷이 5킬 방을 끝까지, 둘은 죽으면 바로 E).
 
 ## 13. 프로세스 나누기 (계획)
@@ -547,10 +557,41 @@ npm run server:load -- --url ws://127.0.0.1:8790 --rooms 4 --bots 8 --seconds 18
 
 ## 15. 브라우저 접속 모듈 (`js/net/gameserver.js`, 꺼져 있음)
 
-- **켜는 조건**: `js/config.js`의 `gameServer.url`이 있고, `transport`가 `'server'`이거나 주소에 `?server=1`이 있을 때만(`gameServerUrl()`). 지금 배포 값은 `transport: 'relay'`, `gameServer.url: ''`이라 **실제 게임은 바뀌지 않는다**(`tests/gameserver-client.test.mjs`가 확인).
+- **켜는 조건**: 화면은 16절의 방마다 고르기(`js/net/rollout.js`)를 쓴다. `gameServerUrl()`(transport `'server'` 또는 `?server=1`일 때만)은 시험·진단용으로 남겼다. 지금 배포 값은 `transport: 'relay'`, `gameServer.url: ''`이라 **실제 게임은 바뀌지 않는다**(`tests/gameserver-client.test.mjs`·`server/test/session-server.test.mjs`가 확인).
 - `transport: 'server'`일 때도 로비·방 목록·채팅은 중계 서버로 오간다(`js/net/index.js`가 'relay'로 다룬다). 경기 판정만 게임 서버가 한다.
 - 하는 일: 접속 → join(`v` = `PROTOCOL`) → welcome까지 기다림. 입력(`sendInput`, seq는 모듈이 붙인다)·`pick`·`team`·`start`·`respawn` 보내기, `snap`·`events`·`match`·`error`·`close`를 `on`으로 나눠 줌.
 - 버전이 다르면 code `'RELOAD'`(reload: true) 오류로 끝나고 메시지는 `t('net.reloadRequired')` = "새로고침 필요: …".
 - 판·키 비트·줄 칸·닫기 코드는 `js/net/gameproto.js` 하나에 있고 서버(`server/core/protocol.js`)가 그대로 다시 내보낸다.
 - 시험: `tests/gameserver-client.test.mjs`(켜는 조건, 오류, 같은 약속), `server/test/client.test.mjs`(실제 서버에 붙어 welcome·ack·거절·버전 오류).
-- **남은 일**(8절 3~7): 세션에 붙이기(방장 판정 끄기, 서버 이벤트로 화면 그리기), 예측·보정, 원격 아바타 보간, `index.html` CSP `connect-src`에 게임 서버 주소 더하기(주소가 정해질 때).
+- join에 `tokenHash`(account.tokenHash())를 싣고, `gs.paid`로 서버가 포인트를 넣는지 안다.
+- CSP: 주소가 정해지면 `node tools/set-domain.mjs --game-server <호스트>`가 `gameServer.url`과 `index.html`·`_headers`의 `connect-src`를 함께 바꾼다(`--game-server off`로 되돌린다, `tests/gameserver-csp.test.mjs`).
+
+## 16. 게임 화면의 서버 판정 개인전 (11-23)
+
+```
+방장 브라우저: 방 열기 → GET /rollout(1.5초) → 주사위 → 이 방 = 'server' | 'host'
+            [게임 시작](개인전) → 게임 서버 방 gr에 join(tokenHash) → 'mx' prep { eng:'s', gr } → 모두 같은 gr에 join
+모두: 입력 30 Hz → 게임 서버 → snap(위치)·events·match(점수판) → serverlink가 화면 id로 바꿔 세션의 방장 판정 길(onMatchData)에 넣는다
+```
+
+- **방마다 고르기**(`js/net/rollout.js` `chooseEngine`): 주소가 없으면 묻지도 않고 `host`. `?server=0`이면 `host`. `/rollout`을 못 읽으면(서버가 꺼짐·막힘) `host`. `accepting:false`거나 `ratio` 0이면 `host`(끄는 스위치). `?server=1`·transport `'server'`면 받는 서버일 때 늘 `server`(시험용). 그 밖에는 `random() < ratio`.
+  방장 브라우저가 방을 열 때(또는 방장이 바뀔 때) 한 번 고르고, 그 방의 개인전 시작마다 쓴다. 팀전·폭파·좀비는 늘 `host`.
+- **대신하기(fallback)**: 시작할 때 게임 서버에 붙지 못하면 그 방을 `host`로 바꾸고 방장 판정으로 바로 시작한다(채팅: "게임 서버에 닿지 않아 이번 경기는 방장이 판정해요."). 버전이 다르면(4002) "새로고침 필요"를 채팅에 띄우고 역시 방장 판정으로. 손님이 붙지 못하면 그 손님만 대기실에 남는다.
+- **방장 판정 끄기**: 서버 판정 경기(`current.server`)에서는 `createMatch`·히트 주장·사격·수류탄·총 버리기 방송·상태 방송(sync)을 하지 않는다. 중계 방장이 나가도 이어받지 않는다(게임 서버가 계속 돌린다). 중계 방장은 3초마다 prep을 다시 알려 늦게 들어온 사람도 붙는다.
+- **서버 방의 시작**: 게임 서버 방의 방장(가장 먼저 붙은 사람 = 보통 중계 방장)이, 방 사람이 다 붙었거나 둘 이상이고 8초가 지나면 `start`를 보낸다.
+- **번역**(`js/game/serverlink.js`): 서버 id → 내 것은 중계 방의 내 id, 남은 `gs-p3` 같은 id. 점수판(match.snapshot)에 `mid·map·gm:'ffa'·rs`를 붙여 방장 판정 스냅샷과 같은 모양으로 만든다. 이벤트는 같은 틱 끝의 점수판과 한 묶음으로 넘긴다(결과 화면이 마지막 킬까지 센 점수판을 보게). 사격·수류탄 연출은 남의 것만 아바타에 그린다.
+- **원격 사람**: 스냅샷 줄(30 Hz)을 서버 틱 시각으로 `js/game/interp.js`에 넣어 보간한다(지연 최소 80 ms). 그리는 서버 틱을 입력의 `viewTick`으로 보내 되감기 기준으로 쓴다.
+- **내 위치(간단판)**: 내 움직임은 브라우저가 지금처럼 바로 그린다(예측). 입력을 보낼 때의 내 발 위치를 seq와 함께 적어 두고, 스냅샷의 내 줄(ack)과 비교한다. 오차 0.12 m 이하는 두고, 그보다 크면 35%씩 당기고(`world.correctLocal`), 3 m 넘으면 서버 자리로 옮긴다.
+  **남은 차이**: 입력을 다시 돌리는 정식 보정(8절 4)은 하지 않았다. 지연이 크거나 밀려남·발판이 있으면 당기는 것이 눈에 보일 수 있다. 움직이는 지형(movers)의 시계는 중계 방장 시계라 서버와 다를 수 있다.
+- **포인트**: 17절. `welcome.paid`가 true인 사람만 브라우저가 포인트를 더하지 않는다. 결과를 보내지 않는 서버(비밀 값 없음)거나 토큰 해시가 없으면 지금처럼 브라우저가 더한다(그때 서버는 넣지 않으므로 두 번이 아니다). 즉시 부활 값도 paid면 서버가 보상에서 빼고 브라우저는 내지 않는다.
+- **시험**: `tests/rollout.test.mjs`(고르기), `tests/serverlink.test.mjs`(번역·보간·보정·입력), `server/test/session-server.test.mjs`(**진짜 세션 둘 + 진짜 게임 서버**로 5킬 한 판 끝까지, 결과 서명·전송, 닿지 않을 때·버전이 다를 때 방장 판정, 주소가 없을 때 지금 그대로).
+
+## 17. 경기 결과 서명·보내기 (11-23)
+
+- 약속은 `docs/MATCH_RESULT_CONTRACT.md`. 서버는 `server/api/src/result-sign.js`를 그대로 불러 서명한다.
+- `room.join`이 `tokenHash`를 사람마다 들고 있다(스냅샷·이벤트·점수판에 싣지 않는다. `server/test/results.test.mjs`가 받은 글자 전부를 검사한다).
+- 개인전 `matchEnd`에서 `rewards.matchRewards`의 값으로 `buildResult`를 만든다. 토큰 해시가 있는 사람만, 같은 해시는 한 번, `points` = 보상(즉시 부활 값을 뺀 값)을 0~2000으로 자른 값, `placement` = 순위표 등수.
+  `roomId` = `<방 id>-<프로세스마다 다른 8자>-<방 번호>`라 서버를 다시 띄우거나 같은 방 id를 다시 써도 `resultId`가 겹치지 않는다.
+- `server/node/results.js`가 보낸다: 보낼 때마다 `signedAt`을 새로 채워 다시 서명. 503·404·403·429·5xx·네트워크 = 1초·5초·30초·2분·10분 간격으로 최대 12번. 401 `RESULT_STALE` = 바로 한 번 더. 400·409·그 밖의 401 = 다시 보내지 않고 error 로그.
+  끌 때 남은 결과는 3초 더 보내 보고, 그래도 남으면 `match result dropped on shutdown` 로그만 남긴다.
+- 로그 문구: `match results disabled`(꺼짐, 시작할 때 한 줄) · `match result queued` · `match result posted` · `match result retry` · `match result rejected` · `match result gave up` · `match result dropped on shutdown`. `/healthz`의 `results`에 횟수가 있다.
