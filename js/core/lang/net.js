@@ -27,4 +27,8 @@ export default {
   'net.roomFull': ['방이 가득 찼습니다', 'Room is full'],
   'net.trackFailed': ['presence 등록 실패: {status}', 'Presence registration failed: {status}'],
   'net.noCrypto': ['이 브라우저는 비밀번호 방을 지원하지 않아요', 'This browser doesn\'t support password rooms'],
+  'net.reloadRequired': ['새로고침 필요: 게임이 새 버전으로 바뀌었어요. 페이지를 새로고침해 주세요', 'Reload needed: the game was updated. Please refresh the page'],
+  'net.gameServerUrlMissing': ['게임 서버 주소(gameServer.url)가 없습니다', 'Game server URL (gameServer.url) is missing'],
+  'net.gameServerTimeout': ['게임 서버 응답 시간 초과', 'The game server did not answer in time'],
+  'net.gameServerClosed': ['게임 서버 연결이 끊겼습니다 ({code})', 'Disconnected from the game server ({code})'],
 };

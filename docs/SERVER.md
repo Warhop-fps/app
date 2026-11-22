@@ -1,7 +1,8 @@
 <!--
   Date: 06NOV2026
   Author: Minkyu Jung
-  Purpose: 권위 서버 시제품(server/)의 구조, 프로토콜, 틱·되감기 설계, 입력 검증, 운영 지표, 브라우저 클라이언트를 붙이는 계획, 배포 계획(실행 환경 고르기·systemd·Caddy·Grafana Cloud·GitHub Actions·Durable Objects).
+  Purpose: 권위 서버 시제품(server/)의 구조, 프로토콜, 틱·되감기 설계, 입력 검증, 운영 지표, 브라우저 클라이언트를 붙이는 계획, 배포 계획(실행 환경 고르기·systemd·Caddy·Grafana Cloud·GitHub Actions·Durable Objects),
+           서버가 판정하는 개인전, 프로세스 나누기 계획, 개발 PC 부하 측정, 브라우저 접속 모듈.
 -->
 # 권위 서버 시제품
 
@@ -132,7 +133,7 @@ room.size;
 옮겨 적은 것은 칼 판정 `meleeTrace` 하나다. `js/game/world.js`가 three.js를 불러 node에서 import할 수 없어서다(7절에서 공용 모듈로 뺀다).
 서버 이동이 브라우저와 같다는 것은 시험이 직접 확인한다: 같은 키를 1/60초 두 번씩 돌린 `createLocalPlayer`와 위치·속도가 1e-9까지 같다(걷기·점프·버니합·앉기).
 
-## 3. 프로토콜 (버전 1)
+## 3. 프로토콜 (버전 2)
 
 접속은 WebSocket `/room/<방 id>`. 방 id를 주소가 정하므로 Durable Objects에서도 주소만으로 방 객체를 찾는다. 텍스트 프레임 하나에 JSON 객체 하나이고 `t`가 형식이다. 코드는 `server/core/protocol.js`.
 
@@ -140,11 +141,12 @@ room.size;
 
 | t | 필드 | 뜻 |
 |---|---|---|
-| `join` | `v` 프로토콜, `name`(24자), `team?`, `opts?: { map, mode, ruleset }` | 접속 뒤 한 번. opts는 방을 처음 만들 때만 쓴다 |
+| `join` | `v` 프로토콜, `name`(24자), `team?`, `opts?: { map, mode, ruleset, killTarget }` | 접속 뒤 한 번. opts는 방을 처음 만들 때만 쓴다. killTarget은 개인전 목표 킬(5~20으로 자른다, 없으면 20) |
 | `input` | `seq` 입력 번호, `keys` 누르고 있는 키, `press?` 새로 누른 키, `yaw`, `pitch`, `slot?` 무기 칸, `viewTick?` 그린 틱 | **입력 하나 = 서버 틱 하나(1/30초)** |
 | `pick` | `weapon` 무기 id | 라운드 전 무기 선택(match.setLoadout이 규칙을 본다) |
 | `team` | `team` | 대기실에서만 |
 | `start` | | 방장(가장 먼저 들어온 사람)만. 경기가 끝난 뒤에는 새 판 |
+| `respawn` | | 개인전 즉시 부활(죽어서 기다리는 동안 E). 서버가 `match.respawnNow`로 판정하고 횟수를 센다(12절) |
 
 - `keys`(누르고 있는 키): 앞 1, 뒤 2, 왼쪽 4, 오른쪽 8, 점프 16, 앉기 32, 천천히 걷기 64, 사격 128, 조준 256.
   조준은 "지금 조준하고 싶다"는 뜻이다. 토글 설정은 클라이언트가 풀어서 보낸다.
@@ -158,11 +160,11 @@ room.size;
 
 | t | 필드 | 언제 |
 |---|---|---|
-| `welcome` | `playerId`(서버가 정한 신원), `team`, `room`, `hz`, `tick`, `map`, `mode`, `ruleset`, `leader`, `maxRewindMs`, `row`(줄 칸 이름) | join 직후 |
+| `welcome` | `playerId`(서버가 정한 신원), `team`, `room`, `hz`, `tick`, `map`, `mode`, `ruleset`, `killTarget`(개인전, 팀전은 null), `leader`, `maxRewindMs`, `row`(줄 칸 이름) | join 직후 |
 | `snap` | `tick`, `players` 줄 배열, `me` 받는 사람만의 상태 | 틱마다 |
 | `events` | `tick`, `events` 이벤트 배열 | 이벤트가 있던 틱 끝 |
 | `match` | `tick`, `match`(match.snapshot()), `leader`, `ping`(사람별 왕복 ms) | 이벤트가 있을 때와 0.5초마다 |
-| `error` | `code`, `message` | 끊기 직전 |
+| `error` | `code`, `message`, 버전이 다르면 `reload: true`·`server`·`client` | 끊기 직전 |
 
 - 스냅샷 줄: `[id, x, y, z, yaw, pitch, flags, hp, weapon, ack]`. 위치 cm 정수, 각도 0.001 rad 정수,
   flags는 `js/game/protocol.js`의 `FLAG`(땅 1, 줌 2, 걷기 4, 생존 8, 재장전 16, 앉음 32). **ack = 서버가 그 사람의 입력 중 마지막으로 처리한 번호**.
@@ -170,15 +172,24 @@ room.size;
   다음 단계의 예측·보정이 쓴다.
 - 이벤트: match.js 이벤트(join, leave, team, loadout, roundStart, phase, damage, kill, roundEnd, matchEnd, spawn) +
   서버 연출 이벤트 `fire {id, w, o 눈, h 탄착, hk 맞은 것, rw 되감은 틱}`, `swing`, `nade {gid, pos, vel, fuse}`, `boom {gid, pos}`, `leader {id}`.
-  `reject`는 요청한 사람에게만 간다.
+  `reject`는 요청한 사람에게만 간다. 경기가 끝나면 사람마다 자기 보상 `reward {id, summary, reward, quick, cost}`가 그 사람에게만 간다(12절).
 - 닫기 코드: 1001 서버 종료, 1008 위반 누적, 1009 프레임 너무 큼, 4001 방이 가득 참, 4002 프로토콜 버전, 4003 join 시간 초과, 4004 방 수 상한, 4005 입장 거절, 4006 받는 쪽이 못 따라옴, 4007 방 오류.
 
-형식이 호환되지 않게 바뀌면 `PROTOCOL`을 올리고, 서버는 다른 버전의 join을 4002로 끊는다. 모르는 `t`는 버린다(새 클라이언트가 옛 서버에 붙어도 바로 끊기지 않게).
+형식이 호환되지 않게 바뀌면 `PROTOCOL`을 올린다. 11-23에 `respawn`·`killTarget`·`reward`를 더하면서 2로 올렸다.
+
+**버전 맞추기(접속할 때)**: 클라이언트는 join의 `v`에 자기 판을 싣는다. 서버 판과 다르면 서버는 방에 넣지 않고 아래 오류를 보낸 뒤 4002로 끊는다.
+
+```json
+{ "t": "error", "code": "bad_version", "message": "새로고침 필요", "reload": true, "server": 2, "client": 1 }
+```
+
+클라이언트는 `reload: true`를 보면 다시 붙지 말고 "새로고침 필요" 안내를 띄운다(배포 직후 옛 탭이 남아 있을 때). 모르는 `t`는 버린다(새 클라이언트가 옛 서버에 붙어도 바로 끊기지 않게).
 
 ## 4. 틱 설계
 
 - **30 Hz, 입력 하나 = 틱 하나.** 이동은 그 입력으로 1/60초씩 두 번 돈다(`substeps` 2). 이동 수치(`MOVE`)는 브라우저 60 Hz 고정 틱에 맞춰 튜닝돼 있어서 점프 높이·버니합·마찰이 그대로 나온다. 무기 상태 머신도 같은 간격으로 두 번 돈다.
-- **틱 순서**: ① 사람마다 입력 하나(이동 → 무기, 사격은 그 자리에서 되감아 판정) ② 수류탄 ③ `match.tick` → 라운드 이벤트 적용 ④ 위치 기록 ⑤ 스냅샷·이벤트·점수판. 입장·퇴장·무기 선택처럼 틱 밖에서 생긴 일도 다음 틱 끝에 함께 나간다.
+- **방 하나 = 한 줄로 도는 actor.** pick·team·start·respawn은 받는 즉시 처리하지 않고 방의 받은 줄(inbox)에 도착 순서대로 쌓았다가 다음 틱 처음에 그 순서로 꺼낸다. 이동 입력은 그 사람의 입력 줄로 바로 들어가 틱마다 하나씩 꺼낸다. 방끼리는 아무것도 나눠 쓰지 않고(맵 충돌체만 읽기 전용), 그래서 방을 CPU 코어마다 프로세스 하나씩 나눠도 규칙이 같다(13절). 받은 줄은 512개에서 오래된 것부터 버린다(`inboxDropped`).
+- **틱 순서**: ⓪ 받은 줄 ① 사람마다 입력 하나(이동 → 무기, 사격은 그 자리에서 되감아 판정) ② 수류탄 ③ `match.tick` → 라운드 이벤트 적용 ④ 위치 기록 ⑤ 스냅샷·이벤트·점수판. 입장·퇴장·무기 선택처럼 틱 밖에서 생긴 일도 다음 틱 끝에 함께 나간다.
 - **사람 처리 순서는 틱마다 한 칸씩 돈다.** 같은 틱에 서로 쏜 두 사람 중 늘 같은 사람이 먼저 맞히지 않게 한다(먼저 처리된 사람의 킬로 상대는 그 틱에 쏘지 못한다).
 - **입력 줄**(`core/actor.js`)
   - 틱마다 정확히 한 걸음. 밀린 입력을 한 틱에 여러 개 처리하지 않으므로 시간을 당겨 빨리 달리는 조작(speed hack)이 통하지 않는다.
@@ -198,6 +209,9 @@ room.size;
   - `server stats`: 방·사람·접속 수, 틱 시간 평균·최대(`tickMsAvg`·`tickMsMax`, 모든 방을 한 번 돈 시간), 초당 받은·보낸 메시지와 KB.
   - `room stats`: 방마다 `room`·`players`·`phase`·`tick`, 그 방의 틱 시간 평균·최대, 초당 받은·보낸 메시지와 KB, 평균 되감기.
   - 같은 값의 마지막 창이 `/healthz`의 `window`와 `/metrics`의 `skala_messages_in_per_second`·`skala_messages_out_per_second`·`skala_tick_max_ms`에도 실린다.
+- **최근 값**(`/healthz`의 `live`, `/metrics` 게이지): 틱 하나(모든 방)의 계산 시간 최근 30초 p50·p95·최대(`skala_tick_ms{q="0.5"|"0.95"|"max"}`),
+  최근 10초 초당 보낸 바이트와 한 사람당 값(`skala_bytes_out_per_second`·`skala_bytes_out_per_player_per_second`), 프로세스 CPU 최근 10초 평균(한 코어 = 100, `skala_process_cpu_percent`), 메모리(`skala_process_rss_bytes`·`skala_process_heap_used_bytes`).
+  `server/node/rolling.js`가 계산한다. 부하 측정 명령(`npm run server:load`, 14절)이 이 값을 읽는다.
 - **지표**(`/metrics`, Prometheus): 게이지 `skala_connections`·`skala_rooms`·`skala_players`, 히스토그램 `skala_tick_duration_ms`, 카운터 받은 메시지(형식별)·버린 메시지(이유별)·보낸 메시지·바이트·거절한 업그레이드(이유별)·끊은 접속(이유별)·방 오류·건너뛴 틱.
   초당 값은 카운터에 `rate()`를 쓰는 것이 정확하고, 게이지는 수집기 없이 보는 용도다.
 - 방·사람 id는 지표 라벨로 달지 않는다(시계열이 사람 수만큼 늘어난다). 방별 값은 로그로 보고 Grafana에서 JSON 필드로 거른다.
@@ -251,7 +265,7 @@ room.size;
 
 ## 8. 브라우저 클라이언트를 붙이는 계획 (다음 단계)
 
-1. **전송**: `js/net`에 Supabase Realtime 대신 이 서버로 가는 전송 모듈(`js/net/server.js`)을 더하고 주소에 `?server=1`이 있을 때만 쓴다. 서버 주소는 `js/config.js`에 두고, `index.html` CSP의 `connect-src`와 `tests/web-security.test.mjs`도 함께 고친다. 기존 Supabase 경로는 남겨 두 방식을 같은 조건으로 비교한다.
+1. **전송**: 접속 모듈은 `js/net/gameserver.js`로 만들었다(15절). 주소에 `?server=1`이 있거나 `transport: 'server'`일 때만 쓴다. 서버 주소는 `js/config.js`에 두고, `index.html` CSP의 `connect-src`와 `tests/web-security.test.mjs`도 함께 고친다. 기존 Supabase 경로는 남겨 두 방식을 같은 조건으로 비교한다.
 2. **입력**: 60 Hz 고정 틱 두 번마다 입력 하나를 보낸다(서버 substeps 2와 같다). 누르고 있는 키, 새로 누른 키, 시점, 입력 번호, 그린 틱(viewTick)을 싣는다.
 3. **예측(prediction)**: 내 플레이어는 지금처럼 `createLocalPlayer`로 바로 움직인다. 보낸 입력은 번호와 함께 보관한다.
 4. **보정(reconciliation)**: 스냅샷이 오면 내 줄의 서버 상태(위치, `me`의 속도·땅·이동 기억)로 되돌리고 ack보다 뒤의 입력을 다시 돌린다. 차이가 작으면 화면 위치만 몇 프레임에 걸쳐 따라가고, 크면(포털·밀침) 바로 옮긴다.
@@ -467,10 +481,75 @@ DO 어댑터는 `server-do/`처럼 따로 두고(Worker 템플릿의 `src/index.
 
 ## 11. 알려진 한계와 다음 단계
 
-- 브라우저 클라이언트가 아직 붙지 않는다(8절).
+- 브라우저 클라이언트는 접속 모듈(`js/net/gameserver.js`, 15절)만 있고 화면(세션)에는 아직 붙지 않는다(8절).
 - 다시 들어오기가 없다. 끊기면 새 사람이고 그 사람의 기록은 match에 접속 끊김으로 남는다.
 - 인증이 없다. 이름은 아무거나 쓸 수 있다(계정 연결은 8절 9).
 - 시야 걸러내기가 없어 벽 투시를 막지 못한다.
 - 총 버리기·줍기, 이모트, 채팅은 아직 서버에 없다(모르는 형식이라 버린다).
 - 방 하나는 프로세스 하나 안에 있다. 사람이 많아지면 방을 여러 프로세스(또는 VM)에 나누고 방을 찾아 주는 로비가 필요하다.
-- **부하 측정이 다음 일이다**: `tools/bots.js`로 방을 여러 개 띄워 방 수에 따른 틱 99퍼센타일·CPU·메모리·대역폭을 재고, 그 수치로 VM 한 대(또는 DO 무료 한도)가 받을 방 수를 정한다.
+- 부하는 개발 PC에서만 쟀다(14절). EC2 서울에서 같은 명령으로 다시 재야 VM 한 대가 받을 방 수를 정할 수 있다.
+- 포인트는 서버가 계산만 하고 저장하지 않는다(12절).
+
+## 12. 서버가 판정하는 개인전 (11-23)
+
+규칙은 브라우저와 같은 모듈을 쓴다. 새로 쓴 규칙은 없다.
+
+| 규칙 | 어디서 | 서버에서 |
+|---|---|---|
+| 목표 킬 5~20(기본 20), 5분, 부활 3초, 부활 무적 1.5초, 처음 무기 선택 5초 | `js/game/match.js`(mode 'ffa'), `js/game/modes.js` `FFA_KILLS` | 방을 처음 만든 사람의 `join.opts.killTarget`을 `parseKillTarget`으로 자른다. 개인전 방 정원은 16명(`--ffa-room-size`) |
+| 스폰: 살아 있는 사람과 먼 곳 상위 3곳 중 무작위 | `match.js` + `getPositions` | 방이 사람들의 지금 발 위치를 넘긴다 |
+| 즉시 부활(E): 부활까지 0.5초 넘게 남았을 때만, 값 = 킬 보상 한 번(10 P) | `match.respawnNow`, `account/economy.js` `quickRespawnCost` | `respawn` 메시지 → `respawnNow`. instant spawn이 나오면 그 사람의 횟수를 센다. 거절(`not_waiting`·`too_late`·`not_ffa`)은 그 사람에게만 |
+| 보상: 킬 10 · 헤드샷 5 · 승리 60 × 목표 킬/20 · 완주 20, 즉시 부활 값은 뺀다 | `economy.matchReward`·`withQuickRespawns`, `js/game/rules/summary.js` `matchSummary` | 경기 끝에 사람마다 `reward { id, summary, reward, quick, cost }`를 그 사람에게만 보낸다(`server/core/rewards.js`) |
+
+- `matchSummary`는 원래 `js/game/session.js` 안에 있었다. 화면·네트워크와 얽힌 파일이라 서버가 부를 수 없어서 순수 모듈 `js/game/rules/summary.js`로 옮겼고, `session.js`는 같은 함수를 다시 내보낸다(브라우저 동작은 그대로. `tests/room-ffa.test.mjs`가 같은 함수인지 본다).
+- **포인트는 아직 서버가 저장하지 않는다.** 서버에는 Supabase 비밀 키가 없고, 계정과 접속을 잇는 인증도 없다(8절 9). 다음 단계: join에 계정 토큰 → 서버가 확인 → 경기 끝에 서버가 `reward`를 경기 id 하나로 한 번만 기록. 그때 클라이언트의 `recordMatch`는 서버 값을 보여 주기만 한다.
+- 시험: 소켓 없이 `tests/room-ffa.test.mjs`(목표 킬 자르기, 즉시 부활과 거절, 보상 숫자, 받은 줄 순서), 소켓으로 `server/test/ffa.test.mjs`(가짜 클라이언트 넷이 5킬 방을 끝까지, 둘은 죽으면 바로 E).
+
+## 13. 프로세스 나누기 (계획)
+
+방 하나는 actor 하나이고 방끼리 나눠 쓰는 것이 없으므로, **CPU 코어마다 Node 프로세스 하나**를 띄우고 방 id로 프로세스를 고르면 된다.
+
+- 가장 단순한 길: 프로세스마다 포트를 달리 띄우고(`--port 8801`, `8802`, …), Caddy가 `/room/<id>`의 id 해시로 포트를 고른다. 같은 방 id는 늘 같은 프로세스로 간다.
+- 이번에는 하지 않았다. 14절 측정으로는 개발 PC에서 한 프로세스로 8인방 8개(64명)가 틱 예산(33 ms)의 4분의 1쯤(p95 8.7 ms)만 쓴다. EC2에서 다시 재고 모자랄 때 나눈다.
+
+## 14. 측정 (2026-11-23, 개발 PC)
+
+> **EC2가 아니다.** 개발 PC(Windows 11, Intel Core Ultra 5 125H 18스레드, 메모리 16 GB, Node 24.15)에서 서버 하나와 가짜 클라이언트를 **같은 PC**에서 돌렸다.
+> 가짜 클라이언트도 CPU를 나눠 쓰고, 네트워크는 루프백(지연은 가짜 클라이언트가 한쪽 30±10 ms를 넣는다)이다. EC2 서울(작은 VM, vCPU 1~2)에서는 숫자가 더 나쁠 수 있다. 같은 명령으로 다시 잰다.
+
+재는 법:
+
+```bash
+npm run server -- --port 8790 --host 127.0.0.1 --max-per-ip 1000 --max-rooms-per-ip 100 --max-rooms 100 --log-level warn
+npm run server:load -- --url ws://127.0.0.1:8790 --rooms 4 --bots 8 --seconds 180 --json
+```
+
+- 방마다 개인전(arena 맵, 목표 킬 20), 가짜 클라이언트 8명이 싸우고 죽으면 바로 E(즉시 부활)를 보낸다. 경기가 끝나면 방장이 다시 시작한다.
+- 5초마다 서버의 `/healthz`를 읽는다. 앞 10초는 데우기로 뺐다. 틱 p50은 표본 평균, p95·최대는 가장 나쁜 30초 창, CPU는 10초 평균(한 코어 = 100%).
+- 네 번 모두 같은 서버 프로세스를 이어서 썼다(RSS가 차례로 커진 것은 그 때문일 수 있다. 오래 돌릴 때 메모리가 계속 크는지는 따로 봐야 한다).
+
+| 방 × 사람 | 시간 | 틱 p50 | 틱 p95 | 틱 최대 | CPU 평균 / 최대 | RSS 최대 | 보낸 양(전체) | 1인당 보낸 양 | 킬 |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 × 8 (8명) | 180초 | 0.82 ms | 2.52 ms | 5.3 ms | 5.0% / 12.1% | 105 MB | 219 KB/s | 27.4 KB/s | 430 |
+| 4 × 8 (32명) | 180초 | 2.82 ms | 6.36 ms | 17.5 ms | 12.5% / 22.2% | 212 MB | 916 KB/s | 28.6 KB/s | 1792 |
+| 8 × 8 (64명) | 180초 | 5.06 ms | 8.65 ms | 16.1 ms | 22.5% / 38.5% | 210 MB | 1806 KB/s | 28.2 KB/s | 3600 |
+
+(4 × 8은 두 번 쟀다. 첫 번째는 측정 중에 시험을 함께 돌려 버렸고 p50 2.88 · p95 5.35 · 최대 14.5 ms로 비슷했다. 표는 두 번째 값.)
+
+읽는 법:
+
+- 세 번 모두 건너뛴 틱 0, 서버가 끊은 접속 0, 방 오류 0.
+- 틱 시간은 방 수에 거의 비례한다(8인방 하나에 약 0.6~0.7 ms). 30 Hz 한 틱은 33 ms라, 이 PC의 한 코어로는 단순 계산상 8인방 40개 안팎이 상한이다. 실제로는 직렬화·전송(아래)과 GC 때문에 그보다 낮게 잡는다.
+- **대역폭이 먼저 문제다.** 1인당 약 28 KB/s(약 230 kbit/s)를 내려보낸다. 8인방 하나에 약 1.8 Mbit/s, 64명이면 약 15 Mbit/s, 한 달 내내 돌리면 64명 기준 약 4.7 TB다. EC2 데이터 전송 비용을 생각하면 줄이는 일이 CPU보다 먼저다:
+  스냅샷을 20 Hz로(`--snapshot-every`는 아직 명령줄에 없다, `snapshotEvery: 2`면 15 Hz), 바뀐 칸만 보내기(델타), 줄을 이진으로.
+- 메모리는 프로세스 하나 100~210 MB. 1 GB VM에서도 여유가 있다.
+
+## 15. 브라우저 접속 모듈 (`js/net/gameserver.js`, 꺼져 있음)
+
+- **켜는 조건**: `js/config.js`의 `gameServer.url`이 있고, `transport`가 `'server'`이거나 주소에 `?server=1`이 있을 때만(`gameServerUrl()`). 지금 배포 값은 `transport: 'relay'`, `gameServer.url: ''`이라 **실제 게임은 바뀌지 않는다**(`tests/gameserver-client.test.mjs`가 확인).
+- `transport: 'server'`일 때도 로비·방 목록·채팅은 중계 서버로 오간다(`js/net/index.js`가 'relay'로 다룬다). 경기 판정만 게임 서버가 한다.
+- 하는 일: 접속 → join(`v` = `PROTOCOL`) → welcome까지 기다림. 입력(`sendInput`, seq는 모듈이 붙인다)·`pick`·`team`·`start`·`respawn` 보내기, `snap`·`events`·`match`·`error`·`close`를 `on`으로 나눠 줌.
+- 버전이 다르면 code `'RELOAD'`(reload: true) 오류로 끝나고 메시지는 `t('net.reloadRequired')` = "새로고침 필요: …".
+- 판·키 비트·줄 칸·닫기 코드는 `js/net/gameproto.js` 하나에 있고 서버(`server/core/protocol.js`)가 그대로 다시 내보낸다.
+- 시험: `tests/gameserver-client.test.mjs`(켜는 조건, 오류, 같은 약속), `server/test/client.test.mjs`(실제 서버에 붙어 welcome·ack·거절·버전 오류).
+- **남은 일**(8절 3~7): 세션에 붙이기(방장 판정 끄기, 서버 이벤트로 화면 그리기), 예측·보정, 원격 아바타 보간, `index.html` CSP `connect-src`에 게임 서버 주소 더하기(주소가 정해질 때).

@@ -11,6 +11,8 @@
  *          (tools/make-notice-key.mjs, docs/NOTICE.md). 비우면 공지 기능이 꺼진다. 공지는 transport가 'relay'일 때만 오간다.
  *          api.url은 로그인 연결·테스트 결제 API(server/api Worker) 주소다. 비우면 구글·카카오 로그인과 코인 탭이 보이지 않는다.
  *          채우면 index.html CSP의 connect-src에도 같은 https 주소를 더한다(server/api/README.md). 비밀 키는 여기가 아니라 Worker secret에 둔다.
+ *          gameServer.url은 서버가 판정하는 게임 서버(server/, docs/SERVER.md) 주소다. 비어 있으면 꺼진다(지금 값).
+ *          채워도 transport를 'server'로 바꾸거나 주소에 ?server=1을 붙인 탭에서만 쓴다(js/net/gameserver.js). 로비·방 목록은 그때도 중계 서버(relay.url)로 오간다.
  */
 window.SKALA_CONFIG = {
   supabase: {
@@ -20,5 +22,6 @@ window.SKALA_CONFIG = {
   transport: 'relay',
   relay: { url: 'https://skala-relay.skala-fps.workers.dev', hz: 20 },
   notice: { key: 'BNK5OrvWuP8gFyH0iyGnJUpzQceucA1qDLnpzzJMRoN1x4xwJyR2OSWMGiBZZ1yg4K12I9Pg6xeoQyAqvS1tsko' },
-  api: { url: 'https://skala-api.skala-fps.workers.dev' }
+  api: { url: 'https://skala-api.skala-fps.workers.dev' },
+  gameServer: { url: '' }
 };

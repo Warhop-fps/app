@@ -16,6 +16,7 @@
  *   await room.leave(); net.close();
  *
  * 전송 방식(SKALA_CONFIG.transport): 'supabase'(기본, Supabase Realtime) 또는 'relay'(SKALA_CONFIG.relay.url의 중계 서버).
+ * 'server'는 경기를 게임 서버(gameServer.url, ./gameserver.js)가 판정하는 시험 설정이다. 로비·방 메시지는 그때도 중계 서버로 오가므로 여기서는 'relay'와 같다.
  * 어느 쪽이든 Lobby·Room의 API와 의미는 같다. 자세한 API·한도·설계는 README.md
  */
 import { RealtimeSocket, Emitter, netError, randomId, sanitizeName } from './realtime.js';
@@ -33,7 +34,7 @@ export * as codec from './codec.js';
 export * as limits from './limits.js';
 
 const ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
-export const TRANSPORTS = Object.freeze(['supabase', 'relay']);
+export const TRANSPORTS = Object.freeze(['supabase', 'relay', 'server']);
 
 /**
  * 중계 서버에서 쓰는 방 기본값. 서버가 프레임을 받는 사람에게 직접 나눠 주므로 mesh로 충분하고(방장 uplink 중계가 필요 없다),
@@ -58,8 +59,9 @@ function readConfig() {
  */
 export async function connect(opts = {}) {
   const cfg = readConfig();
-  const transport = String(opts.transport || cfg.transport || 'supabase').trim().toLowerCase();
-  if (!TRANSPORTS.includes(transport)) throw netError('NO_CONFIG', t('net.unknownTransport', { transport }));
+  const asked = String(opts.transport || cfg.transport || 'supabase').trim().toLowerCase();
+  if (!TRANSPORTS.includes(asked)) throw netError('NO_CONFIG', t('net.unknownTransport', { transport: asked }));
+  const transport = asked === 'server' ? 'relay' : asked;   // 로비·방은 중계 서버, 경기 판정만 게임 서버(gameserver.js)
   let makeSocket;
   let room = opts.room;
   if (transport === 'relay') {
