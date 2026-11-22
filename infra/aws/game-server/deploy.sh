@@ -166,8 +166,8 @@ fi
 # 9) 오래된 릴리스 정리: 두 슬롯이 쓰는 것과 최근 5개는 남긴다
 keep_a=$(fps_slot_value a FPS_RELEASE)
 keep_b=$(fps_slot_value b FPS_RELEASE)
-ls -1dt /opt/fps/releases/*/ 2> /dev/null | sed 's#/$##' | tail -n +6 | while read -r dir; do
+{ ls -1dt /opt/fps/releases/*/ 2> /dev/null || true; } | sed 's#/$##' | tail -n +6 | while read -r dir; do
   if [ "$dir" != "$keep_a" ] && [ "$dir" != "$keep_b" ]; then rm -rf "$dir"; fi
-done
+done || true
 
 log "완료: $ref ($sha), 슬롯 $new, 프로세스 $workers개"

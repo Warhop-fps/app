@@ -64,7 +64,7 @@ fps_slot_value() {
   local file="$FPS_STATE_DIR/slot-$1.env"
   [ -f "$file" ] || return 0
   # shellcheck disable=SC1090
-  (. "$file" && eval "printf '%s' \"\$$2\"")
+  (. "$file" && eval "printf '%s' \"\${$2:-}\"")
 }
 
 # 슬롯의 게임 프로세스가 부팅 때 다시 켜지지 않게 한다(지금 도는 것은 그대로)
