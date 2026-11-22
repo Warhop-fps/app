@@ -35,6 +35,8 @@ export const DEFAULTS = Object.freeze({
   defaultRuleset: 'classic',
   defaultKillTarget: null,  // 개인전 목표 킬(방장이 opts.killTarget을 주지 않았을 때). null이면 20
   matchRules: Object.freeze({}),   // createMatch 규칙 덮어쓰기(데모·시험의 짧은 라운드)
+  hordeRules: null,         // 좀비 방 규칙(HORDE) 덮어쓰기(시험·측정용. 예: { prepMs: 2000 })
+  hordeStartStage: null,    // 좀비 방 시작 스테이지(시험·측정용. 보스 스테이지를 바로 재려면 3)
   allowedOrigins: Object.freeze([]), // 비어 있으면 Origin을 보지 않는다(개발). 운영은 사이트 주소만. Origin이 없는 요청(브라우저 밖)은 통과
   trustProxy: false,        // true면 X-Forwarded-For의 첫 주소를 접속 IP로 본다(Caddy 뒤에서만 켠다)
   logLevel: 'info',
@@ -60,6 +62,7 @@ const USAGE = `사용법: node server/node.js [옵션]   방 주소: ws://<호�
   --trust-proxy         X-Forwarded-For를 믿는다 (프록시 뒤에서만)
   --log-level <lv>      trace, debug, info, warn, error, silent (환경 변수 LOG_LEVEL)
   --stats-sec <n>       통계 로그(서버 한 줄 + 방마다 한 줄) 간격 (기본 ${DEFAULTS.statsIntervalMs / 1000})
+  --horde-start-stage <n> 좀비 방 시작 스테이지(측정용, 1~200)   --horde-prep-sec <n> 좀비 방 준비 시간(초, 측정용)
   --round-sec <n>       라운드 길이(초)      --loadout-sec <n>  무기 선택 시간(초)
   --round-end-sec <n>   라운드 결과 시간(초) --rounds-to-win <n> 선승 수
   --seed <n>            난수 시드`;
@@ -91,7 +94,7 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env) {
       map: { type: 'string' }, mode: { type: 'string' }, ruleset: { type: 'string' },
       origins: { type: 'string' }, 'trust-proxy': { type: 'boolean' }, 'log-level': { type: 'string' },
       'round-sec': { type: 'string' }, 'loadout-sec': { type: 'string' }, 'round-end-sec': { type: 'string' },
-      'rounds-to-win': { type: 'string' }, seed: { type: 'string' }, 'stats-sec': { type: 'string' }, help: { type: 'boolean', short: 'h' }
+      'rounds-to-win': { type: 'string' }, 'horde-start-stage': { type: 'string' }, 'horde-prep-sec': { type: 'string' }, seed: { type: 'string' }, 'stats-sec': { type: 'string' }, help: { type: 'boolean', short: 'h' }
     }
   });
   const c = { ...DEFAULTS, matchRules: { ...DEFAULTS.matchRules } };
@@ -116,6 +119,8 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env) {
     c.defaultMode = values.mode;
   }
   if (values.ruleset !== undefined) c.defaultRuleset = values.ruleset;
+  if (values['horde-start-stage'] !== undefined) c.hordeStartStage = int('--horde-start-stage', values['horde-start-stage'], 1, 200);
+  if (values['horde-prep-sec'] !== undefined) c.hordeRules = { ...(c.hordeRules || {}), prepMs: seconds('--horde-prep-sec', values['horde-prep-sec'], 0, 60) };
   const origins = values.origins ?? env.ALLOWED_ORIGINS;
   if (origins) c.allowedOrigins = origins.split(',').map((s) => s.trim()).filter(Boolean);
   if (values['trust-proxy']) c.trustProxy = true;

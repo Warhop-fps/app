@@ -25,6 +25,8 @@ import { TokenBucket, createStrikes } from '../core/limits.js';
 import { MAP_CHOICES } from '../core/maps.js';
 import { CLOSE, PROTOCOL, decodeClient, encodeError, encodeVersionError, roomIdFromPath } from '../core/protocol.js';
 import { createRoom } from '../core/room.js';
+import { createHordeServerRoom } from '../core/horde-room.js';
+import { HORDE_MODE } from '../../js/net/hordeproto.js';
 import { DEFAULTS } from './config.js';
 import { createLogger } from './log.js';
 import { createLoop } from './loop.js';
@@ -312,6 +314,19 @@ export async function startServer(options = {}) {
     };
   }
 
+  /**
+   * 좀비 방 설정. 씨앗은 서버가 판마다 정한다. 시험·측정용 규칙(hordeRules·hordeStartStage)은 서버 설정에서만 온다(손님은 못 고른다).
+   * 판 끝 요약은 options.onHordeMatchEnd(summary)로 넘긴다: 결과 서명·저장을 붙일 자리(docs/HORDE_SERVER.md 8절)
+   */
+  function hordeRoomOptions(roomId, opts) {
+    return {
+      send: (pid, text) => { const c = byPlayer.get(pid); if (c) sendTo(c, text); },
+      id: roomId, map: opts.map, hz: cfg.hz, rules: cfg.hordeRules || undefined, startStage: cfg.hordeStartStage || undefined,
+      seed: () => Math.floor(master() * 0xfffffffe) + 1, log, onEmpty: () => closeRoom(roomId, 'empty'),
+      onMatchEnd: typeof options.onHordeMatchEnd === 'function' ? options.onHordeMatchEnd : null
+    };
+  }
+
   function onJoin(conn, msg) {
     if (conn.room) return strike(conn, 1, 'double_join');
     // 판이 다르면 이유(새로고침 필요)를 보내고 끊는다. 옛 클라이언트가 모르는 메시지를 받고 엉뚱하게 움직이지 않게 방에는 넣지 않는다
@@ -323,7 +338,8 @@ export async function startServer(options = {}) {
       // 한 IP가 1인 방을 잔뜩 만들어 방 수 상한을 채우지 못하게 한다
       if ((roomsByIp.get(conn.ip) || 0) >= cfg.maxRoomsPerIp) return drop(conn, CLOSE.SERVER_FULL, 'too_many_rooms');
       const opts = roomOptions(msg.opts);
-      room = createRoom({
+      room = opts.mode === HORDE_MODE ? createHordeServerRoom(hordeRoomOptions(roomId, opts)) : null;   // 좀비 물량 막기(core/horde-room.js)
+      if (!room) room = createRoom({
         send: (pid, text) => { const c = byPlayer.get(pid); if (c) sendTo(c, text); },
         rttOf: (pid) => { const c = byPlayer.get(pid); return c ? c.rtt : null; },
         id: roomId, ...opts, hz: cfg.hz, substeps: cfg.substeps, roomSize: opts.mode === 'ffa' ? cfg.ffaRoomSize : cfg.roomSize, maxRewindMs: cfg.maxRewindMs,

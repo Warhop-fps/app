@@ -27,11 +27,16 @@
  *   match   { t:'match', tick, match, leader, ping }       점수판(match.snapshot()). 이벤트가 있을 때와 0.5초마다
  *   error   { t:'error', code, message, reload?, server? } 끊기 직전의 이유. reload:true면 클라이언트를 새로고침해야 한다(버전이 다르다)
  *   경기 끝 보상은 events 안의 { type:'reward', id, summary, reward, quick } 로 그 사람에게만 간다(account.recordMatch의 모양)
+ *
+ * 좀비 방(opts.mode = 'zombie'): 손님 형식 zs·zhit·zswing·zboom·zcard·zloot·zrev와 서버 형식 zlobby·zsnap·zev를 더한다(판은 그대로).
+ *   검사는 core/horde-protocol.js, 모양은 js/net/hordeproto.js, 설명은 docs/HORDE_SERVER.md 8절
  */
 import { wrapAngle } from '../../js/engine/interp.js';
 import { FLAG } from '../../js/game/protocol.js';
 import { parseKillTarget } from '../../js/game/modes.js';
 import { CLOSE, KEY, KEY_MASK, PRESS, PRESS_MASK, PROTOCOL, RELOAD_MESSAGE, ROW } from '../../js/net/gameproto.js';
+import { HORDE_MODE } from '../../js/net/hordeproto.js';
+import { HORDE_DECODERS } from './horde-protocol.js';
 
 export { FLAG };
 // 판·키 비트·줄 칸·닫기 코드는 브라우저와 함께 쓰는 js/net/gameproto.js가 정본이다
@@ -98,7 +103,7 @@ function cleanOpts(o) {
   const out = { map: null, mode: null, ruleset: null, killTarget: null };
   if (!o || typeof o !== 'object' || Array.isArray(o)) return out;
   if (typeof o.map === 'string' && OPT_RE.test(o.map)) out.map = o.map;
-  if (typeof o.mode === 'string' && MODES.includes(o.mode)) out.mode = o.mode;
+  if (typeof o.mode === 'string' && (MODES.includes(o.mode) || o.mode === HORDE_MODE)) out.mode = o.mode;   // 좀비는 core/horde-room.js
   if (typeof o.ruleset === 'string' && OPT_RE.test(o.ruleset)) out.ruleset = o.ruleset;
   if (o.killTarget !== undefined && o.killTarget !== null) out.killTarget = parseKillTarget(o.killTarget);   // 5~20으로 자른다(modes.FFA_KILLS)
   return out;
@@ -139,7 +144,9 @@ const DECODERS = Object.freeze(Object.assign(Object.create(null), {
   },
   respawn() {
     return { t: 'respawn' };
-  }
+  },
+  // 좀비 방의 손님 형식(core/horde-protocol.js). 다른 방에 오면 방이 버린다
+  ...HORDE_DECODERS
 }));
 
 /**
