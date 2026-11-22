@@ -2427,6 +2427,23 @@ function buildWorld(ctx, opts) {
   }, 500));
 
   /* ---------- 공개 API ---------- */
+  /**
+   * 서버 판정 방(게임 서버): 서버가 본 내 위치 쪽으로 당긴다(js/game/serverlink.js takeCorrection의 값).
+   * { dx, dy, dz }면 그만큼 옮기고, { snap:true, pos }면 그 자리로 옮기고 속도를 멈춘다. 맵이 없거나 출격 전이면 하지 않는다
+   */
+  function correctLocal(c) {
+    if (!map || !c || !local.spawned || !local.alive) return false;
+    const st = player.state;
+    if (c.snap && Array.isArray(c.pos) && c.pos.every(Number.isFinite)) {
+      st.pos[0] = c.pos[0]; st.pos[1] = c.pos[1]; st.pos[2] = c.pos[2];
+      st.vel[0] = 0; st.vel[1] = 0; st.vel[2] = 0;
+      return true;
+    }
+    if (![c.dx, c.dy, c.dz].every(Number.isFinite)) return false;
+    st.pos[0] += c.dx; st.pos[1] += c.dy; st.pos[2] += c.dz;
+    return true;
+  }
+
   function getLocalState() {
     const st = player.state;
     const s = player.snapshot();
@@ -2497,6 +2514,7 @@ function buildWorld(ctx, opts) {
     removeActor,
     clearActors,
     setActorState,
+    correctLocal,
     actorFire,
     actorReload,
     actorGrenade,

@@ -214,5 +214,9 @@ export default {
   'room.readyHint': ['준비를 누르면 방장이 게임을 시작할 수 있어요.', 'Ready up so the host can start.'],
   'room.waitHostReason': ['방장 대기 중 · {reason}', 'Waiting on host · {reason}'],
   'room.waitHost': ['방장이 게임을 시작하기를 기다리는 중…', 'Waiting for the host to start…'],
-  'room.copyInvite': ['초대 링크 복사', 'Copy invite link']
+  'room.copyInvite': ['초대 링크 복사', 'Copy invite link'],
+  'room.serverFallback': ['게임 서버에 닿지 않아 이번 경기는 방장이 판정해요.', 'Could not reach the game server, so the host judges this match.'],
+  'room.serverJoinFailed': ['게임 서버에 들어가지 못했어요. 다음 경기를 기다려 주세요.', 'Could not join the game server. Please wait for the next match.'],
+  'room.serverLost': ['게임 서버와 연결이 끊겨 이번 경기는 무효예요(포인트 없음).', 'Lost the game server, so this match is void (no points).'],
+  'room.serverJudged': ['이번 경기는 게임 서버가 판정해요.', 'The game server judges this match.']
 };

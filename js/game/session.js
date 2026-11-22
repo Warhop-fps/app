@@ -25,6 +25,10 @@
  *   자리 비움  경기 밖(대기실·결과)에서 roomIdleMs(1분) 동안 아무 활동이 없으면 방장이 방을 닫는다. 10초 전에 모두에게 안내와 [계속 기다리기]
  *          활동 = 들어오고 나감·팀·준비·이름·캐릭터, 방 설정, 채팅, 대기실 조작, 경기 시작·끝, [계속 기다리기]. 핑 갱신 같은 presence 변화는 활동이 아니다
  *   폭파 미션  미션 맵·클래식 고정. world 'bombAction'(E 키) → sync.sendBomb → 방장 match.bombIntent. 스냅샷마다 world.setBomb (MODES.md 5절)
+ *   서버 판정 개인전  게임 서버 주소가 있고(SKALA_CONFIG.gameServer.url) 방을 열 때 /rollout 주사위가 'server'면(js/net/rollout.js) 방장이
+ *          개인전을 시작할 때 게임 서버 방에 먼저 붙고 'mx' prep에 eng:'s'·gr(서버 방 id)을 싣는다. 모두 같은 서버 방에 붙어 입력만 보내고,
+ *          점수판·이벤트는 게임 서버 것을 방장 판정 때와 같은 길(onMatchData)로 받는다(js/game/serverlink.js). 방장 판정·히트 주장·상태 방송은 끈다.
+ *          서버에 닿지 않으면 그 방은 방장 판정으로 돌아간다. 서버가 포인트를 넣는 사람(welcome.paid)은 브라우저가 포인트를 더하지 않는다(docs/SERVER.md 16절)
  *
  * 계약서: js/game/SESSION_API.md
  */
@@ -50,6 +54,9 @@ import { t, loc } from '../core/i18n.js';
 import { maskProfanity } from '../core/profanity.js';
 import { platform } from '../platform/index.js';
 import { matchSummary, ffaTarget } from './rules/summary.js';
+import { connectGameServer as defaultConnectGameServer } from '../net/gameserver.js';
+import { chooseEngine as defaultChooseEngine, gameServerBase, gameServerWs } from '../net/rollout.js';
+import { createServerLink, createInputSampler } from './serverlink.js';
 
 export const SESSION_DEFAULTS = Object.freeze({
   maxPlayers: 6,          // Supabase Realtime(transport 'supabase') 무료 한도(3:3). 방 만들기 max는 2..이 값으로 자른다
@@ -615,6 +622,12 @@ export function createSession(options = {}) {
   const fireQ = [];
   let frameOff = null, rafId = null, frameTimer = null;
   let playerName = initialName();
+  // 서버 판정 개인전(게임 서버). 주소가 없으면 roomEngine은 늘 'host'이고 아래 길은 쓰이지 않는다
+  let roomEngine = null;          // (방장) 이 방의 판정 엔진 'server' | 'host' | null(아직 모름 = 방장 판정)
+  let engineAsking = null;
+  let serverOpening = null;       // 게임 서버 방에 붙는 중인 경기 id
+  const serverFailed = new Set(); // 붙지 못한 경기 id(같은 prep 알림이 다시 와도 다시 붙지 않는다)
+  const gsConfig = () => o.config || globalThis.SKALA_CONFIG || {};
 
   /* ---------------------------------------------------------------- 계정 */
   function account() { return (ctx && ctx.account) || null; }
@@ -965,10 +978,12 @@ export function createSession(options = {}) {
     if (o.roomIdleMs > 0 && !idleTimer) idleTimer = setInterval(idleTick, 1000);
     renderRoom(true);
     screen('room');
+    decideEngine();
     // 이미 경기 중인 방이면 방장의 다음 스냅샷(1초 안)으로 관전 합류한다(onMatchData)
   }
 
   function detachRoom() {
+    roomEngine = null;
     for (const f of roomOffs.splice(0)) safeOff(f);
     if (sync) { try { sync.dispose(); } catch (e) { report(e, 'sync.dispose'); } sync = null; }
     if (idleTimer) { clearInterval(idleTimer); idleTimer = null; }
@@ -1154,6 +1169,7 @@ export function createSession(options = {}) {
         abortStale();
         safeMeta({ status: 'waiting' });
       }
+      decideEngine();
     } else if (hm && info.prevHostId === me) {
       stopHost();   // 방장 자리를 잃었다(충돌 해소) → 새 방장의 스냅샷을 따른다
     }
@@ -1469,13 +1485,14 @@ export function createSession(options = {}) {
   const floorAt = (x, fromY, z) => W('floorAt', x, fromY, z);
 
   function hostStart() {
-    if (!room || phase !== 'room' || !room.isHost() || hm) return;
+    if (!room || phase !== 'room' || !room.isHost() || hm || serverOpening) return;
     const mode = roomMode();
     const why = startProblem(room.players(), mode);
     if (why) { pushChat({ system: true, text: why }); return; }
     const ruleset = mode === 'bomb' || isZombieMode(mode) ? 'classic' : roomRuleset();
     const mapId = validMapFor(ruleset, room.meta.mapId || o.mapId, mode);
     if (mode === 'bomb' && !bombMapOk(mapId)) { pushChat({ system: true, text: t('room.bombMapNeeded') }); return; }
+    if (mode === 'ffa' && roomEngine === 'server') { serverStart(mapId, ruleset); return; }
     const mid = randomId(8);
     hm = {
       mid, mapId, mode, ruleset, m: null, preparing: true, prepDeadline: Infinity, acks: new Set([me]),
@@ -1736,7 +1753,7 @@ export function createSession(options = {}) {
   /** 방장이 나가 내가 이어받음 → 최신 스냅샷으로 복원, 실패하면 경기 종료 */
   function takeOver() {
     const c = current;
-    if (!c || !room || !room.isHost() || hm) return;
+    if (!c || c.server || !room || !room.isHost() || hm) return;   // 서버 판정 경기는 게임 서버가 계속 돌린다
     const last = sync ? sync.lastMatch() : null;
     const snap = last && last.snapshot && last.snapshot.mid === c.mid ? last.snapshot : null;
     if (isZombieMode(c.mode)) {
@@ -1884,7 +1901,19 @@ export function createSession(options = {}) {
       return;
     }
     if (p.k === 'prep' && msg.from === room.hostId() && typeof p.mid === 'string' && p.mid.length <= 16) {
-      if (phase === 'room' && p.mid !== finishedMid) enterMatch(p.mid, cleanText(p.map, 32) || room.meta.mapId || o.mapId, p.mode, p.rs);
+      if (phase !== 'room' || p.mid === finishedMid) return;
+      const mapId = cleanText(p.map, 32) || room.meta.mapId || o.mapId;
+      // 서버 판정 경기: 같은 게임 서버 방(gr)에 붙는다. 방장은 경기 중 3초마다 다시 알린다(늦게 들어온 사람)
+      if (p.eng === 's') {
+        if (typeof p.gr !== 'string' || !/^[a-z0-9]{1,16}$/.test(p.gr) || serverFailed.has(p.mid) || serverOpening) return;
+        openServerMatch({ mid: p.mid, mapId, ruleset: p.rs, gr: p.gr, create: false }).then((ok) => {
+          if (ok || disposed) return;
+          serverFailed.add(p.mid);
+          if (phase === 'room') pushChat({ system: true, text: t('room.serverJoinFailed') });
+        });
+        return;
+      }
+      enterMatch(p.mid, mapId, p.mode, p.rs);
       return;
     }
     // 자리 비움: { k:'idle', left } 방장 → 모두(left ms 뒤 닫힘, 0이면 안내 거둠) / { k:'close', why:'idle' } 방장 → 모두 / { k:'stay' } 손님 → 방장
@@ -1902,6 +1931,191 @@ export function createSession(options = {}) {
       return;
     }
     if (p.k === 'close' && p.why === 'idle' && !leaving) leaveRoom(idleClosedText(span));
+  }
+
+  /* ---------------------------------------------------------------- 서버 판정 개인전(게임 서버) */
+  /** (방장) 이 방의 판정 엔진을 한 번 고른다(js/net/rollout.js). 게임 서버 주소가 없으면 묻지 않고 방장 판정 */
+  function decideEngine() {
+    if (!room || !room.isHost() || roomEngine || engineAsking) return;
+    if (!gameServerBase(gsConfig())) { roomEngine = 'host'; return; }
+    const r = room;
+    const choose = o.chooseEngine || defaultChooseEngine;
+    engineAsking = Promise.resolve()
+      .then(() => choose({ cfg: gsConfig() }))
+      .then((eng) => { if (room === r && !disposed) { roomEngine = eng === 'server' ? 'server' : 'host'; trace('engine', roomEngine); } },
+        () => { if (room === r) roomEngine = 'host'; })
+      .finally(() => { engineAsking = null; });
+  }
+
+  /** (방장) 서버 판정으로 시작. 게임 서버에 닿지 않으면 이 방을 방장 판정으로 바꾸고 그대로 시작한다 */
+  function serverStart(mapId, ruleset) {
+    const mid = randomId(8);
+    const gr = randomId(12);
+    trace('server start', mid, gr, mapId);
+    openServerMatch({ mid, mapId, ruleset, gr, create: true }).then((ok) => {
+      if (ok || disposed || !room || phase !== 'room' || !room.isHost()) return;
+      roomEngine = 'host';
+      pushChat({ system: true, text: t('room.serverFallback') });
+      hostStart();
+    });
+  }
+
+  /**
+   * 게임 서버 방 gr에 붙고(join에 기기 토큰 해시) 경기 화면으로 들어간다. 방장(create)이면 붙은 뒤 모두에게 prep(eng:'s')을 알린다.
+   * 버전이 다르면 "새로고침 필요"를 방 채팅에 띄운다. → Promise<boolean> 붙었으면 true
+   */
+  async function openServerMatch(p) {
+    if (serverOpening || !room) return false;
+    serverOpening = p.mid;
+    const r = room;
+    try {
+      const a = account();
+      let tokenHash = null;
+      try { tokenHash = a && typeof a.tokenHash === 'function' ? await a.tokenHash() : null; } catch (_) { tokenHash = null; }
+      const connect = o.connectGameServer || defaultConnectGameServer;
+      let gs;
+      try {
+        gs = await connect({
+          url: gameServerWs(gameServerBase(gsConfig())), room: p.gr, name: myName(), tokenHash,
+          opts: p.create ? { mode: 'ffa', map: p.mapId, ruleset: p.ruleset, killTarget: roomKillTarget() } : undefined,
+          ...(o.WebSocket ? { WebSocket: o.WebSocket } : {})
+        });
+      } catch (e) {
+        trace('game server join failed', e && e.code);
+        if (e && e.code === 'RELOAD' && room === r) pushChat({ system: true, text: e.message || t('net.reloadRequired') });
+        return false;
+      }
+      if (disposed || room !== r || phase !== 'room') { try { gs.close(); } catch (_) { /* noop */ } return false; }
+      const w = gs.welcome || {};
+      const mapId = typeof w.map === 'string' && w.map ? w.map : p.mapId;   // 서버가 그 맵을 모르면 서버 기본 맵이다. 서버 값을 따른다
+      const rs = normalizeRuleset(w.ruleset || p.ruleset);
+      if (p.create) {
+        try { room.send(CONTROL_EVENT, { k: 'prep', mid: p.mid, map: mapId, mode: 'ffa', rs, eng: 's', gr: p.gr }); } catch (e) { report(e, 'prep'); }
+        safeMeta({ status: 'playing' });
+      }
+      const link = createServerLink({ me, mid: p.mid, map: mapId, ruleset: rs });
+      link.welcome(w);
+      const c = enterMatch(p.mid, mapId, 'ffa', rs);
+      c.server = {
+        link, gs, gr: p.gr, sampler: createInputSampler(), leaderId: w.leader != null ? String(w.leader) : null,
+        startSent: false, startTries: 0, startAt: now(), nextInputAt: 0, seq: -1, prepAt: now(), offs: []
+      };
+      wireServer(c);
+      pushChat({ system: true, text: t('room.serverJudged') }, false);
+      return true;
+    } finally {
+      if (serverOpening === p.mid) serverOpening = null;
+    }
+  }
+
+  function wireServer(c) {
+    const s = c.server;
+    const mine = (fn) => (m) => {
+      if (current !== c || disposed) return;
+      try { fn(m); } catch (err) { report(err, 'game server'); }
+    };
+    // 경기 이벤트는 같은 틱 끝에 오는 점수판(match)과 함께 넘긴다: 방장 판정 때처럼 이벤트와 그 뒤 상태가 한 묶음이어야
+    // 결과 화면·HUD가 마지막 킬까지 센 점수판을 본다(서버는 이벤트가 있던 틱에 늘 점수판을 보낸다)
+    const held = [];
+    s.offs.push(s.gs.on('match', mine((m) => {
+      if (m && m.leader != null) s.leaderId = String(m.leader);
+      const d = s.link.matchData(m);
+      d.events = held.splice(0);
+      onMatchData(d);
+    })));
+    s.offs.push(s.gs.on('events', mine((m) => {
+      const out = s.link.eventsData(m);
+      for (const f of out.fx) serverFx(c, f);
+      for (const rj of out.rejects) if (rj.action === 'start') s.startSent = false;   // 아직 둘이 안 됐다(need_players) → 다시
+      if (out.data) held.push(...out.data.events);
+      if (held.length > 256) held.splice(0, held.length - 256);
+    })));
+    s.offs.push(s.gs.on('snap', mine((m) => s.link.snap(m, now()))));
+    s.offs.push(s.gs.on('close', mine((e) => {
+      if (c.resultsShown) return;
+      finishedMid = c.mid;
+      const reload = e && e.error && e.error.code === 'RELOAD';
+      matchToRoom(reload ? t('net.reloadRequired') : t('room.serverLost'));   // 서버가 꺼지면 그 경기는 무효(결과가 나가지 않는다)
+    })));
+  }
+
+  /** 서버의 사격·수류탄 연출(남의 것) → 아바타 */
+  function serverFx(c, f) {
+    if (!c.loaded || !actors.has(f.id)) return;
+    if (f.type === 'fire') {
+      const from = vec(f.o), to = vec(f.h);
+      let dir = null;
+      if (from && to) {
+        const d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+        const len = Math.hypot(d[0], d[1], d[2]) || 1;
+        dir = [d[0] / len, d[1] / len, d[2] / len];
+      }
+      W('actorFire', { id: f.id, weaponId: f.w, origin: from, dir, hitPoint: to, hitKind: f.hk || (to ? 'world' : 'none') });
+      noteGear(f.id, f.w);
+    } else if (f.type === 'nade') {
+      W('actorGrenade', { id: f.id, grenadeId: f.gid, pos: f.pos, vel: f.vel, t: now(), fuse: f.fuse });
+    }
+  }
+
+  /** 서버 판정 경기의 프레임: 입력 30 Hz → 내 위치 보정 → 원격 보간 → (서버 방장) 시작 → (중계 방장) prep 다시 알리기 */
+  function serverFrame(c, t) {
+    const s = c.server;
+    const link = s.link;
+    const st = call(world, 'getLocalState') || {};
+    const keys = (o.inputState) || (ctx && ctx.input && ctx.input.state) || {};
+    if (!s.nextInputAt || t - s.nextInputAt > 500) s.nextInputAt = t;   // 처음, 또는 탭이 멈췄다 돌아옴
+    for (let n = 0; t >= s.nextInputAt && n < 4; n++) {
+      s.nextInputAt += link.tickMs;
+      const alive = c.localAlive && st.alive !== false;
+      const msg = alive ? s.sampler.sample(keys, st) : { keys: 0, press: 0, slot: 0, yaw: Number(st.yaw) || 0, pitch: Number(st.pitch) || 0 };
+      if (alive && s.seq >= 0 && st.pos) link.predicted(s.seq, st.pos);
+      s.seq = s.gs.sendInput({ ...msg, viewTick: link.viewTick(t) });
+    }
+    const corr = link.takeCorrection();
+    if (corr && c.localAlive) W('correctLocal', corr);
+    for (const a of actors.values()) {
+      const vp = viewPlayer(a.id);
+      const alive = !!(vp && vp.connected && vp.alive) && !a.dead;
+      const r = link.remote(a.id, t);
+      let out = null;
+      if (a.spawn) {
+        const near = r && r.pos && Math.hypot(r.pos[0] - a.spawn.pos[0], r.pos[2] - a.spawn.pos[2]) < 4;
+        if (near || t - a.spawn.at > 3000) a.spawn = null;
+        else {
+          out = { pos: a.spawn.pos.slice(), vel: [0, 0, 0], yaw: a.spawn.yaw, pitch: 0, onGround: true, moving: false, teleport: a.spawn.first };
+          a.spawn.first = false;
+        }
+      }
+      if (!out && r) { out = r; out.moving = !!(r.vel && Math.hypot(r.vel[0], r.vel[2]) > 0.3); }
+      if (!out) continue;
+      const wid = (r && r.weaponId) || weaponFor(a.id, rulesetOf(c.ruleset).slots[0]);
+      const def = getDef(wid);
+      out.alive = alive;
+      out.name = a.name;
+      out.team = null;
+      out.avatar = avatarOf(link.relayOf(a.id) || a.id);
+      if (vp) out.hp = vp.hp;
+      out.slot = allowedSlot(c.ruleset, def && def.slot ? def.slot : 1);
+      out.weaponId = wid;
+      out.protect = !!(vp && vp.protect);
+      W('setActorState', a.id, out);
+    }
+    // 서버 방의 방장(가장 먼저 들어온 사람)이 시작한다: 방 사람이 다 붙었거나, 둘 이상이고 prepTimeoutMs가 지났으면
+    if (link.self && s.leaderId === link.self && !s.startSent && s.startTries < 8 && c.loaded && c.view && c.view.phase === 'warmup') {
+      const have = c.view.players.filter((x) => x.connected).length;
+      const want = room ? room.players().length : 2;
+      if (have >= 2 && (have >= want || t - s.startAt > o.prepTimeoutMs) && t - (s.startTriedAt || 0) > 1000) {
+        s.startSent = true;
+        s.startTries += 1;
+        s.startTriedAt = t;
+        s.gs.start();
+      }
+    }
+    // 늦게 들어온 사람도 붙게 중계 방장이 3초마다 다시 알린다
+    if (room && room.isHost() && t - s.prepAt > 3000 && !c.resultsShown) {
+      s.prepAt = t;
+      try { room.send(CONTROL_EVENT, { k: 'prep', mid: c.mid, map: c.mapId, mode: 'ffa', rs: c.ruleset, eng: 's', gr: s.gr }); } catch (e) { report(e, 'prep'); }
+    }
   }
 
   /* ---------------------------------------------------------------- 경기: 들어가기 · 나오기 */
@@ -1981,6 +2195,10 @@ export function createSession(options = {}) {
     const c = current;
     current = null;
     fireQ.length = 0;
+    if (c && c.server) {
+      for (const f of c.server.offs.splice(0)) safeOff(f);
+      try { c.server.gs.close(); } catch (_) { /* 이미 닫힘 */ }
+    }
     if (c) {
       if (c.horde) { try { c.horde.dispose(); } catch (e) { report(e, 'horde dispose'); } c.horde = null; }
       for (const id of actors.keys()) W('removeActor', id);
@@ -2291,6 +2509,7 @@ export function createSession(options = {}) {
    */
   function sendGear(c) {
     if (!c.playing) return;
+    if (c.server) { if (c.pick) c.server.gs.pick(c.pick); return; }   // 서버 판정: 고른 무기만 서버에(match.setLoadout)
     const msg = { ...gearMessage(c.ruleset, c.pick, equippedGear()), round: c.round, m: c.mid };
     const json = JSON.stringify(msg);
     if (sync && json !== c.gearJson) { c.gearJson = json; sync.sendLoadout(msg); }
@@ -2578,6 +2797,7 @@ export function createSession(options = {}) {
       c.aliveMismatchAt = 0;
       c.protect = protectMs > 0;
       if (quick) payQuick(c); else c.quickAt = 0;
+      if (c.server) { c.server.link.resetSelf(); c.server.sampler.reset(); }
       if (c.compact) { c.compact = false; U('hide', 'loadout'); }
       W('setRespawn', null);
       W('spawnLocal', { id: me, name: myName(), team: null, spawn: { ...sp }, loadout: lo || c.pick, protectMs });
@@ -2629,13 +2849,15 @@ export function createSession(options = {}) {
     if (myPoints() < QUICK_COST) { offerQuick(c); return; }
     c.quickAt = now();
     trace('quick respawn', c.mid);
-    sync.sendRespawn();
+    if (c.server) c.server.gs.respawn(); else sync.sendRespawn();
   }
   /** 내 spawn에 instant가 붙어 왔다. 내가 방금 청한 것일 때만 낸다(청하지 않은 즉시 부활에는 내지 않는다) */
   function payQuick(c) {
     const asked = c.quickAt > 0 && now() - c.quickAt < QUICK_WAIT_MS;
     c.quickAt = 0;
     if (!asked) return;
+    // 서버가 포인트를 넣는 경기: 값은 서버가 경기 보상에서 뺀다(rewards.js). 여기서 또 내면 두 번 낸다
+    if (c.server && c.server.link.paid) { H('callout', t('room.quickRespawn', { p: QUICK_COST })); return; }
     const r = call(account(), 'spendPoints', QUICK_COST);
     if (!r || !r.ok) return;
     c.quickCount += 1;
@@ -2709,9 +2931,10 @@ export function createSession(options = {}) {
 
   /** (FFA) 원격 아바타: 경기에 있는 접속자 모두(팀 없음). 사망·부활을 놓쳤으면 맞춘다 */
   function placeFfaActors(view) {
-    const present = new Set(room ? room.players().map((x) => x.id) : []);
+    // 서버 판정 경기의 다른 사람 id는 게임 서버 id(gs-…)라 방 명단에 없다. 서버 점수판이 정본이다
+    const present = current && current.server ? null : new Set(room ? room.players().map((x) => x.id) : []);
     const want = new Map();
-    for (const p of view.players) if (p.id !== me && p.connected && present.has(p.id)) want.set(p.id, p);
+    for (const p of view.players) if (p.id !== me && p.connected && (!present || present.has(p.id))) want.set(p.id, p);
     for (const id of [...actors.keys()]) if (!want.has(id)) { W('removeActor', id); actors.delete(id); }
     for (const [id, p] of want) {
       let a = actors.get(id);
@@ -2806,7 +3029,10 @@ export function createSession(options = {}) {
     });
     if (!summary) return null;
     recordedMids.add(c.mid);
-    const res = call(a, 'recordMatch', summary);
+    // 서버가 포인트를 넣는 경기(welcome.paid)면 브라우저는 전적만 쌓고 포인트는 더하지 않는다(두 번 받기 막기, MATCH_RESULT_CONTRACT 8절)
+    const paid = !!(c.server && c.server.link.paid);
+    const sr = paid && c.server.link.reward ? c.server.link.reward.reward : null;
+    const res = paid ? call(a, 'recordMatch', summary, { serverJudged: true, serverReward: sr }) : call(a, 'recordMatch', summary);
     // 개인전 즉시 부활 값은 부활할 때 냈다. 결과 화면에는 이번 판의 순변화로 한 줄 더 보여 준다
     return res ? withQuickRespawns({ gained: res.gained, breakdown: res.breakdown, points: res.points, ...(res.bonusToken != null ? { bonusToken: res.bonusToken } : {}) }, c.quickCount, c.quickPaid) : null;
   }
@@ -2984,6 +3210,7 @@ export function createSession(options = {}) {
   function localState() {
     const c = current;
     if (phase !== 'match' || !c || !c.loaded || !c.playing || !c.round) return null;
+    if (c.server) return null;   // 서버 판정: 내 위치는 입력으로 게임 서버에 간다(중계로 보내지 않는다)
     const st = call(world, 'getLocalState');
     if (!st || typeof st !== 'object' || !st.pos) return null;
     if (hm) {
@@ -3004,29 +3231,30 @@ export function createSession(options = {}) {
   const inRound = () => phase === 'match' && current && current.loaded && current.playing && current.localAlive && sync;
   const localT = (t) => (isNum(t) && Math.abs(t - now()) < 5000 ? t : now());
 
+  const judged = () => !!(current && current.server);   // 서버 판정 경기: 사격·수류탄·버리기는 서버가 입력으로 판정한다
   wOn('fire', (f) => {
-    if (!inRound() || (current.phase !== 'live' && current.phase !== 'roundEnd')) return;
+    if (judged() || !inRound() || (current.phase !== 'live' && current.phase !== 'roundEnd')) return;
     sync.sendFire({ weaponId: f.weaponId, origin: f.origin, dir: f.dir, hit: f.hitPoint || f.hit || null, hitKind: f.hitKind, kind: f.kind, t: localT(f.t) });
   });
   wOn('hitClaim', (h) => {
-    if (!inRound() || current.phase !== 'live' || h.victimId == null) return;
+    if (judged() || !inRound() || current.phase !== 'live' || h.victimId == null) return;
     sync.sendHitClaim({
       victimId: String(h.victimId), part: h.part, weaponId: h.weaponId, dist: Number(h.dist) || 0, kind: h.kind, t: localT(h.t),
       count: h.count, shotId: h.shotId
     });
   });
   wOn('grenade', (g) => {
-    if (!inRound() || current.phase !== 'live') return;
+    if (judged() || !inRound() || current.phase !== 'live') return;
     // 종류: 손 수류탄(없음) · 유탄 발사기 'gl' · 바주카포 'rocket' · C4 수류탄 'c4'(좀비 모드 증강, 좀비에 붙는다) · 특이점포 · 말뚝건 · 투척 도끼 · 제우스의 번개 · 연막탄 · 섬광탄
     const kind = ['gl', 'rocket', 'c4', 'gravity', 'stake', 'axe', 'bolt', 'smoke', 'flash'].includes(g.kind) ? g.kind : undefined;
     sync.sendGrenade({ pos: g.pos, vel: g.vel, t: localT(g.t), kind, fuse: g.fuse });
   });
   // 총은 죽은 뒤에 버리므로 살아 있는지(inRound)는 보지 않는다
   wOn('weaponDrop', (d) => {
-    if (phase !== 'match' || !current || !current.loaded || !current.playing || !sync || current.phase !== 'live') return;
+    if (judged() || phase !== 'match' || !current || !current.loaded || !current.playing || !sync || current.phase !== 'live') return;
     sync.sendDrop({ dropId: d.dropId, weaponId: d.weaponId, pos: d.pos, mag: d.mag, reserve: d.reserve });
   });
-  wOn('weaponPick', (p) => { if (inRound()) sync.sendPick(p.dropId); });
+  wOn('weaponPick', (p) => { if (!judged() && inRound()) sync.sendPick(p.dropId); });
   wOn('explosion', (x) => { if (hm) hostExplosion(x); });
   // 폭파 미션: 내 E 키(휴대폰 설치/해체 버튼) → 방장에게 의도. 취소는 죽은 뒤에도 보낼 수 있다(방장이 이미 끝냈으면 무시)
   wOn('bombAction', (a) => {
@@ -3046,6 +3274,11 @@ export function createSession(options = {}) {
     const c = current;
     if (disposed || phase !== 'match' || !c || !room) return;
     const at = now();
+    if (c.server) {
+      // 서버 판정: 서버 점수판이 0.5초마다 온다. 끊기면 그 경기는 무효(포인트 없음)
+      if (at - c.lastDataAt > o.stallMs && !c.resultsShown) { finishedMid = c.mid; matchToRoom(t('room.serverLost')); }
+      return;
+    }
     if (room.isHost()) {
       if (hm && !hm.m && at - c.enteredAt > o.stallMs + 5000) { trace('watchdog: host map stall', c.mid); abortMatch('map-failed'); return; }
       if (hm || c.resultsShown) return;
@@ -3089,6 +3322,7 @@ export function createSession(options = {}) {
     const c = current;
     if (disposed || phase !== 'match' || !c || !c.loaded || !sync) return;
     const t = now();
+    if (c.server) { serverFrame(c, t); return; }
     for (const a of actors.values()) {
       const vp = viewPlayer(a.id);
       const ffa = c.mode === 'ffa';
@@ -3230,6 +3464,19 @@ export function createSession(options = {}) {
     frame,
     /** Tab 점수판 데이터(world.setScoreboard에 이미 연결됨) */
     scoreboard: scoreboardData,
+    /** (시험·진단) 서버 판정 경기면 { self, paid, enemies:[{ id, pos, alive }], corrections, snaps, maxErr, lastAck }, 아니면 null */
+    debugServer() {
+      const c = current;
+      if (!c || !c.server) return null;
+      const t = now();
+      const enemies = [];
+      for (const a of actors.values()) {
+        const r = c.server.link.remote(a.id, t);
+        const vp = viewPlayer(a.id);
+        if (r && r.pos) enemies.push({ id: a.id, pos: r.pos.slice(), alive: !!(vp && vp.alive) && !a.dead });
+      }
+      return { self: c.server.link.self, paid: c.server.link.paid, enemies, ...c.server.link.stats() };
+    },
     get phase() { return phase; },
     get net() { return net; },
     get room() { return room; },

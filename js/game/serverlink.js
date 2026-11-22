@@ -127,12 +127,13 @@ export function createServerLink(o) {
       return { from: 'server', snapshot: translateSnapshot(m && m.match), events: [] };
     },
 
-    /** 'events' → { data: 세션에 줄 { from, events }(없으면 null), fx: 남의 연출 이벤트(화면 id), reward: 내 보상이 왔으면 } */
+    /** 'events' → { data: 세션에 줄 { from, events }(없으면 null), fx: 남의 연출 이벤트(화면 id), reward: 내 보상이 왔으면, rejects: 내 요청의 거절 } */
     eventsData(m) {
       const list = m && Array.isArray(m.events) ? m.events : [];
       const evs = [];
       const fx = [];
       let got = null;
+      const rejects = [];
       for (const e of list) {
         if (!e || typeof e !== 'object' || typeof e.type !== 'string') continue;
         if (e.type === 'reward') {
@@ -144,10 +145,10 @@ export function createServerLink(o) {
           if (t.id !== me) fx.push(t);
           continue;
         }
-        if (e.type === 'reject') continue;
+        if (e.type === 'reject') { if (self !== null && String(e.by) === self) rejects.push(e); continue; }
         evs.push(translate(e));
       }
-      return { data: evs.length ? { from: 'server', events: evs } : null, fx, reward: got };
+      return { data: evs.length ? { from: 'server', events: evs } : null, fx, reward: got, rejects };
     },
 
     snap(m, arrival) {
