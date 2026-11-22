@@ -2,7 +2,7 @@
  * Date: 06NOV2026
  * Author: Minkyu Jung
  * Purpose: 서버가 판정하는 방(server/의 게임 서버)에 붙는 브라우저 클라이언트. 접속·버전 맞추기(join v)·입력 보내기·받은 메시지 나눠 주기만 한다.
- *          아직 화면(세션)에 연결하지 않았다. SKALA_CONFIG.transport가 'server'이거나 주소에 ?server=1이 있고 gameServer.url이 있을 때만 켜진다(기본은 꺼짐).
+ *          세션(js/game/session.js)은 서버 판정 개인전에서 이 모듈로 붙는다(방마다 고르기는 js/net/rollout.js). gameServer.url이 비면 아무 데도 붙지 않는다.
  */
 /**
  *   const url = gameServerUrl();                       // 꺼져 있으면 ''
@@ -68,6 +68,7 @@ export function gameServerError(m) {
  * @param {string} [o.name]
  * @param {string} [o.team]
  * @param {object} [o.opts] 방을 처음 만들 때 { map, mode, ruleset, killTarget }
+ * @param {string} [o.tokenHash] 기기 토큰의 SHA-256(account.tokenHash()). 경기 결과를 계정에 잇는다. 없으면 손님(서버가 포인트를 넣지 않는다)
  * @param {number} [o.version] 시험용(기본 PROTOCOL)
  * @param {number} [o.timeoutMs=10000]
  * @param {typeof WebSocket} [o.WebSocket]
@@ -90,7 +91,10 @@ export function connectGameServer(o) {
     let settled = false;
     function fail(err) { if (settled) return; settled = true; clearTimeout(timer); reject(err); }
 
-    ws.onopen = () => send({ t: 'join', v: o.version ?? PROTOCOL, name: o.name || '', team: o.team ?? null, opts: o.opts });
+    ws.onopen = () => send({
+      t: 'join', v: o.version ?? PROTOCOL, name: o.name || '', team: o.team ?? null, opts: o.opts,
+      ...(typeof o.tokenHash === 'string' && /^[0-9a-f]{64}$/.test(o.tokenHash) ? { tokenHash: o.tokenHash } : {})
+    });
     ws.onmessage = (e) => {
       let m;
       try { m = JSON.parse(typeof e.data === 'string' ? e.data : String(e.data)); } catch (_) { return; }
@@ -115,6 +119,8 @@ export function connectGameServer(o) {
     const api = {
       get playerId() { return welcome ? welcome.playerId : null; },
       get welcome() { return welcome; },
+      /** 이 사람의 경기 포인트를 서버가 넣는가(welcome.paid). true면 브라우저는 포인트를 더하지 않는다 */
+      get paid() { return !!(welcome && welcome.paid); },
       get closed() { return closed; },
       on: (ev, fn) => em.on(ev, fn),
       /** 입력 하나(서버 틱 하나). seq는 여기서 붙인다 */
