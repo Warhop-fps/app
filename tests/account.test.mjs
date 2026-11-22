@@ -1280,6 +1280,43 @@ describe('createAccount 저장 디바운스', () => {
     assert.equal(account.profile.points, before + 4000 + gained, '화면도 서버 값을 따른다');
   });
 
+  // ───── 서버 판정 방(게임 서버): 두 번 받기 막기 (MATCH_RESULT_CONTRACT 8절) ─────
+  test('서버 판정 경기는 포인트를 더하지 않고(p_delta 0) 전적만 쌓고, 서버 보상을 보여 주고, 몇 초 뒤 서버 값을 다시 읽는다', async (t) => {
+    const { account, server } = await onlineAccount(t);
+    const before = account.profile.points;
+    const kills0 = account.profile.stats.kills;
+    const shown = { gained: 115, breakdown: [{ label: 'x', points: 115 }] };
+    const r = account.recordMatch({ online: true, mode: 'ffa', kills: 5, deaths: 1, win: true, killTarget: 5 }, { serverJudged: true, serverReward: shown });
+    assert.equal(r.serverJudged, true);
+    assert.equal(r.gained, 115, '결과 화면 값은 서버의 reward');
+    assert.equal(r.bonusToken, null, '광고 보너스를 걸지 않는다');
+    assert.equal(account.profile.points, before, '브라우저는 더하지 않는다');
+    assert.equal(account.profile.stats.kills, kills0 + 5, '전적은 브라우저가 쌓는다');
+    t.mock.timers.tick(SAVE_DEBOUNCE_MS);
+    await settle();
+    const save = server.last('fps_save_profile');
+    assert.ok(save, '전적 저장은 나간다');
+    assert.equal(save.args.p_delta, 0, '포인트 변화량 0');
+    // 게임 서버가 서명한 결과로 DB에 115P가 들어갔다
+    server.setPoints(rowPoints(server) + 115);
+    const reads = server.count('fps_get_profile');
+    t.mock.timers.tick(4000);
+    await settle();
+    assert.equal(server.count('fps_get_profile'), reads + 1, '4초 뒤 다시 읽는다');
+    assert.equal(account.profile.points, before + 115, '서버 값을 따른다(한 번만 받았다)');
+    t.mock.timers.tick(11000);
+    await settle();
+    assert.equal(server.count('fps_get_profile'), reads + 2, '15초 뒤 한 번 더');
+  });
+
+  test('서버 보상이 없으면 같은 규칙으로 계산한 값을 보여 주기만 한다', async (t) => {
+    const { account } = await onlineAccount(t);
+    const before = account.profile.points;
+    const r = account.recordMatch({ online: true, kills: 2 }, { serverJudged: true });
+    assert.equal(r.gained, matchReward({ online: true, kills: 2 }).gained);
+    assert.equal(account.profile.points, before);
+  });
+
   test('운영자가 0으로 만든 포인트를 열린 탭이 되살리지 않는다', async (t) => {
     const { account, server } = await onlineAccount(t);
     const before = account.profile.points;
@@ -2198,5 +2235,16 @@ describe('supabase/schema.sql', () => {
       assert.ok(code.includes(`'${error}'`), error);
       assert.ok(index.includes(`'${error}'`), error);
     }
+  });
+});
+
+describe('기기 토큰 해시(게임 서버 join)', () => {
+  test('토큰의 SHA-256 소문자 hex 64자(DB fps_token_hash와 같은 값)', async (t) => {
+    const storage = fakeStorage({ [TOKEN_KEY]: VALID_TOKEN });
+    const { account } = makeAccount(t, { storage });
+    const h = await account.tokenHash();
+    const { createHash } = await import('node:crypto');
+    assert.equal(h, createHash('sha256').update(VALID_TOKEN).digest('hex'));
+    assert.match(h, /^[0-9a-f]{64}$/);
   });
 });

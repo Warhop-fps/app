@@ -29,6 +29,10 @@
  *   account.canSell(id)           지금 살 수 있는 물건인가. 서버를 쓰면 fps_features의 prices(서버 가격표)에 같은 값으로 있어야 한다.
  *                                 아니면 buy는 { ok:false, reason:'closed' }다(서버가 모르는 물건을 사면 포인트만 잃으므로)
  *   recordMatch의 summary에 knifeKills를 넣으면 전적에 쌓인다(선택).
+ *   recordMatch(summary, { serverJudged:true, serverReward? })  서버가 판정한 방(게임 서버)의 경기. 전적만 쌓고 **포인트는 더하지 않는다**.
+ *                                 포인트는 게임 서버가 서명한 결과로 DB에 들어가므로(docs/MATCH_RESULT_CONTRACT.md 8절), 여기서 더하면 두 번 받는다.
+ *                                 결과 화면 값은 serverReward(서버의 reward 이벤트) → 없으면 같은 규칙으로 계산한 값. 몇 초 뒤 서버 값을 다시 읽는다
+ *   await account.tokenHash()     기기 토큰의 SHA-256(소문자 hex 64자). 게임 서버 join에 싣는다(경기 결과를 이 계정에 잇는다). 못 만들면 null
  *   account.spendPoints(n)        물건이 아닌 곳에 n 포인트를 쓴다(개인전 즉시 부활). → { ok, spent, points, reason? }, 모자라면 reason 'points'
  *   account.feedbackBox           건의함: 'open' | 'checking'(묻는 중·네트워크 실패, 보내 보면 안다) | 'closed'(서버 없음·서버가 건의함을 모름)
  *                                 fps_features의 feedback:true로 연다. 규칙·문구는 ./feedback.js, 설계는 docs/FEEDBACK.md
@@ -572,9 +576,13 @@ export function createAccount({
   }
 
   // ───────────── 전적 · 보상 ─────────────
-  function recordMatch(summary) {
+  function recordMatch(summary, opts = null) {
     const s = readSummary(summary);
-    const { gained, breakdown } = matchReward(s);
+    const served = !!(opts && opts.serverJudged);
+    const local = matchReward(s);
+    const sr = served && opts.serverReward && Number.isFinite(Number(opts.serverReward.gained)) ? opts.serverReward : null;
+    const gained = sr ? Math.round(Number(sr.gained)) : local.gained;
+    const breakdown = sr && Array.isArray(sr.breakdown) ? sr.breakdown : local.breakdown;
     const t = profile.stats;
     profile.stats = normalizeStats({
       ...t,
@@ -588,9 +596,39 @@ export function createAccount({
       draws: t.draws + (s.draw ? 1 : 0),
       secondsPlayed: t.secondsPlayed + s.seconds
     });
+    if (served) {
+      // 서버 판정 방: 포인트는 서버가 넣는다. 광고 보너스(보상 두 배)도 걸지 않는다(브라우저가 더하는 길이라 서버 값과 섞인다)
+      commit();
+      refreshSoon();
+      return { gained, breakdown, points: profile.points, bonusToken: null, serverJudged: true };
+    }
     profile.points = clampPoints(profile.points + gained);
     commit();
     return { gained, breakdown, points: profile.points, bonusToken: offerBonus(gained) };
+  }
+
+  /** 서버 판정 경기 뒤: 게임 서버가 결과를 보내고 DB에 들어가는 데 몇 초 걸린다. 두 번 다시 읽는다 */
+  const SERVER_RESULT_REFRESH_MS = Object.freeze([4000, 15000]);
+  const resultTimers = new Set();
+  function refreshSoon() {
+    if (!remote.enabled || disposed) return;
+    for (const ms of SERVER_RESULT_REFRESH_MS) {
+      const timer = setTimeout(() => { resultTimers.delete(timer); refreshFromServer({ force: true }); }, ms);
+      resultTimers.add(timer);
+    }
+  }
+
+  /** 기기 토큰의 SHA-256 hex. DB가 사람을 찾는 값과 같다(fps_player_id). 토큰 원문은 게임 서버에 보내지 않는다 */
+  async function tokenHash() {
+    try {
+      const subtle = globalThis.crypto && globalThis.crypto.subtle;
+      const tok = store.token();
+      if (!subtle || !tok) return null;
+      const buf = await subtle.digest('SHA-256', new TextEncoder().encode(tok));
+      return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
+    } catch (_) {
+      return null;
+    }
   }
 
   /**
@@ -794,6 +832,8 @@ export function createAccount({
     if (canListen) for (const [name, fn] of listeners) target.removeEventListener(name, fn);
     if (doc) doc.removeEventListener('visibilitychange', onVisibility);
     if (refreshTimer) clearInterval(refreshTimer);
+    for (const timer of resultTimers) clearTimeout(timer);
+    resultTimers.clear();
     clearTimeout(retryTimer);
     retryTimer = null;
     if (online) online.dispose();
@@ -843,6 +883,7 @@ export function createAccount({
     equipAvatar,
     isOwned,
     recordMatch,
+    tokenHash,
     recordZombie,
     grantAdBonus,
     spendPoints,
