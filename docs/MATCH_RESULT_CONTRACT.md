@@ -64,7 +64,7 @@
 | 무엇 | 값 |
 |---|---|
 | 방식 | HMAC-SHA256, 결과는 base64url(채움 `=` 없음, 43글자) |
-| 비밀 값 | `GAME_RESULT_SECRET`, **32글자 이상**. Worker는 wrangler secret, 게임 서버는 AWS SSM `/skala-fps/game-result-secret` |
+| 비밀 값 | `GAME_RESULT_SECRET`, **32글자 이상**. Worker는 wrangler secret, 게임 서버는 AWS SSM `/skala-fps/game/GAME_RESULT_SECRET` |
 | 이전 비밀 값 | `GAME_RESULT_SECRET_PREV`(Worker만). 교체하는 동안만 둔다 |
 | 열쇠 번호 `kid` | `"k" + hex(SHA-256("skala-result-kid.v1." + 비밀 값))`의 앞 16글자. 비밀 값에서 저절로 나오므로 따로 설정하지 않는다 |
 
@@ -114,7 +114,7 @@ Worker는 `kid`가 지금 값 또는 이전 값의 번호와 같은 것을 골�
 // 저장소 안 상대 경로(예: server/game/src/report.js에서)
 import { signResult } from '../../api/src/result-sign.js';
 
-const secret = process.env.GAME_RESULT_SECRET;          // SSM /skala-fps/game-result-secret 에서 읽어 넣는다
+const secret = process.env.GAME_RESULT_SECRET;          // SSM /skala-fps/game/GAME_RESULT_SECRET 에서 읽어 넣는다
 const result = {
   protocol: 1, resultId: `${roomId}:${seq}`, roomId, matchSeq: seq, serverId, mode, map,
   startedAt, endedAt, signedAt: Date.now(),
