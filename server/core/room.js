@@ -80,6 +80,8 @@ export function createRoom(o) {
   if (!built) throw new Error(`unknown map: ${map}`);
   const rs = normalizeRuleset(ruleset);
   const ffa = mode === 'ffa';
+  // 결과를 실제로 보내는가(어댑터의 우체부가 켜져 있으면 onResult가 있다). welcome.paid로 그 사람에게 알린다
+  const resultsOn = ffa && typeof onResult === 'function';
   const tickMs = 1000 / hz;
   const tickDt = 1 / hz;
   const maxRewindTicks = (Math.max(0, maxRewindMs) / 1000) * hz;
@@ -129,7 +131,9 @@ export function createRoom(o) {
   function welcome(pid, team) {
     return JSON.stringify({
       t: 'welcome', v: PROTOCOL, playerId: pid, team, room: id, hz, tick: tickNo, map: built.id, mode, ruleset: rs,
-      killTarget: ffa ? match.rules.killTarget : null, leader, maxRewindMs, row: ROW
+      killTarget: ffa ? match.rules.killTarget : null, leader, maxRewindMs, row: ROW,
+      // paid: 이 사람의 경기 포인트를 서버가 넣는다(결과를 보내고 토큰 해시가 있다). 브라우저는 그때 포인트를 더하지 않는다(약속 8절)
+      paid: resultsOn && hashes.has(pid)
     });
   }
   function sendSnapshots() {
@@ -232,7 +236,7 @@ export function createRoom(o) {
     const players = [...actors.values()].map((a) => ({ id: a.id, team: a.team }));
     const seconds = liveTick == null ? 0 : Math.round(((tickNo - liveTick) * tickMs) / 1000);
     const rewards = matchRewards(ev, { players, mode: ffa ? 'ffa' : 'team', ruleset: rs, mapId: built.id, killTarget: match.rules.killTarget, seconds, quick });
-    const posting = ffa && typeof onResult === 'function';
+    const posting = resultsOn;
     for (const r of rewards) {
       direct(r.id, {
         type: 'reward', id: r.id, summary: r.summary, reward: r.reward, quick: r.quick, cost: r.quick * QUICK_RESPAWN_COST,

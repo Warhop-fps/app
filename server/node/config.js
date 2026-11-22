@@ -1,7 +1,7 @@
 /*
  * Date: 06NOV2026
  * Author: Minkyu Jung
- * Purpose: 서버 설정. 기본값 표와, 명령줄 인자(--port 등)·환경 변수(PORT, HOST, LOG_LEVEL, ALLOWED_ORIGINS)를 읽어 검사한 설정 객체를 만든다.
+ * Purpose: 서버 설정. 기본값 표와, 명령줄 인자(--port 등)·환경 변수(PORT, HOST, LOG_LEVEL, ALLOWED_ORIGINS, SERVER_ROOM_RATIO, ROLLOUT_FILE, GAME_RESULT_*)를 읽어 검사한 설정 객체를 만든다.
  */
 import { parseArgs } from 'node:util';
 import { MAP_CHOICES } from '../core/maps.js';
@@ -42,6 +42,8 @@ export const DEFAULTS = Object.freeze({
   resultUrl: '',            // 경기 결과를 보낼 주소(환경 변수 GAME_RESULT_URL). 비면 결과를 보내지 않는다
   resultSecret: '',         // 서명 비밀 값(환경 변수 GAME_RESULT_SECRET, 32글자 이상). 명령줄로는 받지 않는다(ps에 보이지 않게)
   resultFlushMs: 3000,      // 끌 때 남은 결과를 더 보내 보는 시간
+  serverRatio: 0,           // 새 방 중 서버 판정으로 만들 비율 0~1(환경 변수 SERVER_ROOM_RATIO). 브라우저가 /rollout으로 읽는다
+  rolloutFile: '',          // 이 JSON 파일({ "ratio": 0.1, "accepting": true })이 있으면 5초마다 읽어 serverRatio 대신 쓴다(환경 변수 ROLLOUT_FILE)
   seed: null                // 난수 시드(재현용). null이면 시각에서
 });
 
@@ -67,6 +69,8 @@ const USAGE = `사용법: node server/node.js [옵션]   방 주소: ws://<호�
   --round-sec <n>       라운드 길이(초)      --loadout-sec <n>  무기 선택 시간(초)
   --round-end-sec <n>   라운드 결과 시간(초) --rounds-to-win <n> 선승 수
   --seed <n>            난수 시드
+  --server-ratio <0~1>  새 방 중 서버 판정 비율 (기본 0 = 끔, 환경 변수 SERVER_ROOM_RATIO)
+  --rollout-file <path> 비율·끄는 스위치 파일 { "ratio": 0.1, "accepting": true }, 5초마다 다시 읽음 (환경 변수 ROLLOUT_FILE)
 환경 변수(경기 결과): GAME_RESULT_URL(POST 주소), GAME_RESULT_SECRET(32글자 이상), GAME_SERVER_ID(결과의 serverId). 둘 중 하나라도 없으면 결과를 보내지 않는다`;
 
 export { USAGE };
@@ -96,7 +100,8 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env) {
       map: { type: 'string' }, mode: { type: 'string' }, ruleset: { type: 'string' },
       origins: { type: 'string' }, 'trust-proxy': { type: 'boolean' }, 'log-level': { type: 'string' },
       'round-sec': { type: 'string' }, 'loadout-sec': { type: 'string' }, 'round-end-sec': { type: 'string' },
-      'rounds-to-win': { type: 'string' }, seed: { type: 'string' }, 'stats-sec': { type: 'string' }, help: { type: 'boolean', short: 'h' }
+      'rounds-to-win': { type: 'string' }, seed: { type: 'string' }, 'stats-sec': { type: 'string' }, help: { type: 'boolean', short: 'h' },
+      'server-ratio': { type: 'string' }, 'rollout-file': { type: 'string' }
     }
   });
   const c = { ...DEFAULTS, matchRules: { ...DEFAULTS.matchRules } };
@@ -143,6 +148,14 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env) {
     if (!/^[A-Za-z0-9_.:-]{1,64}$/.test(env.GAME_SERVER_ID)) throw new Error('GAME_SERVER_ID: 영문·숫자·_.:- 1~64자');
     c.serverId = env.GAME_SERVER_ID;
   }
+  const ratio = values['server-ratio'] ?? env.SERVER_ROOM_RATIO;
+  if (ratio !== undefined) {
+    const n = Number(ratio);
+    if (!Number.isFinite(n) || n < 0 || n > 1) throw new Error(`--server-ratio: 0~1 사이의 수여야 합니다 (받은 값: ${ratio})`);
+    c.serverRatio = n;
+  }
+  const rf = values['rollout-file'] ?? env.ROLLOUT_FILE;
+  if (rf) c.rolloutFile = String(rf);
   if (env.GAME_RESULT_URL) c.resultUrl = String(env.GAME_RESULT_URL).trim();
   if (env.GAME_RESULT_SECRET) c.resultSecret = String(env.GAME_RESULT_SECRET);
   return { config: c, help: !!values.help };

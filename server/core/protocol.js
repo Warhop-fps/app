@@ -22,7 +22,7 @@
  *   respawn { t:'respawn' }      개인전 즉시 부활(죽어서 기다리는 동안 E). 서버가 match.respawnNow로 판정하고 값(킬 보상 한 번)을 센다
  *
  * 서버 → 클라이언트
- *   welcome { t:'welcome', v, playerId, team, room, hz, tick, map, mode, ruleset, killTarget, leader, maxRewindMs, row }
+ *   welcome { t:'welcome', v, playerId, team, room, hz, tick, map, mode, ruleset, killTarget, leader, maxRewindMs, row, paid }   paid = 이 사람의 경기 포인트를 서버가 넣는다
  *   snap    { t:'snap', tick, players:[줄...], me:{...} }   틱마다. 줄 = ROW 순서의 배열, me = 받는 사람만의 상태
  *   events  { t:'events', tick, events:[...] }            경기 이벤트(match.js) + 사격·수류탄 연출 이벤트
  *   match   { t:'match', tick, match, leader, ping }       점수판(match.snapshot()). 이벤트가 있을 때와 0.5초마다

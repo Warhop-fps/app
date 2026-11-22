@@ -30,6 +30,7 @@ import { createLogger } from './log.js';
 import { createLoop } from './loop.js';
 import { createMetrics } from './metrics.js';
 import { createResultPoster } from './results.js';
+import { createRollout } from './rollout.js';
 import { createProcessStats, createRate, createSampler } from './rolling.js';
 
 export const SERVER_VERSION = '0.1.0';
@@ -70,6 +71,7 @@ export async function startServer(options = {}) {
   const bootId = randomBytes(4).toString('hex');
   const serverId = cfg.serverId || 'local';
   const poster = options.poster || createResultPoster({ url: cfg.resultUrl, secret: cfg.resultSecret, log, fetch: options.fetch });
+  const rollout = createRollout({ ratio: cfg.serverRatio, file: cfg.rolloutFile, log });
   let closing = false;
   // 통계 창: statsIntervalMs마다 로그 한 줄씩(서버 전체 + 방마다) 내고 비운다
   let win = { ...emptyWindow(), start: performance.now() };
@@ -139,11 +141,21 @@ export async function startServer(options = {}) {
       cpuPercent: round1(rate.perSec('cpuUs') / 1e4), cpuLastSecPercent: round1(p.cpuPercent), rssMb: round1(p.rssBytes / 1048576), heapMb: round1(p.heapUsedBytes / 1048576)
     };
   }
+  /**
+   * 새 서버 판정 방을 받을지와 비율. 끄는 스위치(파일의 accepting:false·ratio 0), 끄는 중, 방·접속이 상한의 90%를 넘으면 받지 않는다.
+   * 받지 않아도 이미 열린 방에 들어오는 사람은 막지 않는다(경기를 끝까지 하게)
+   */
+  function rolloutAnswer() {
+    const r = rollout.current();
+    const full = rooms.size >= cfg.maxRooms * 0.9 || conns.size >= cfg.maxConnections * 0.9;
+    const accepting = !closing && r.accepting && r.ratio > 0 && !full;
+    return { ok: true, protocol: PROTOCOL, accepting, ratio: accepting ? r.ratio : 0, why: closing ? 'closing' : !r.accepting || r.ratio <= 0 ? 'off' : full ? 'full' : null };
+  }
   function stats() {
     return {
       ok: !closing, version: SERVER_VERSION, protocol: PROTOCOL, uptimeSec: Math.round((Date.now() - startedAt) / 1000),
       hz: cfg.hz, ticks: loop.ticks, rooms: rooms.size, players: playerCount(), connections: conns.size, live: live(), window: lastWindow,
-      results: poster.stats()
+      results: poster.stats(), rollout: rolloutAnswer()
     };
   }
   function onHttp(req, res) {
@@ -152,6 +164,12 @@ export async function startServer(options = {}) {
     if (req.method === 'GET' && path === '/healthz') {
       res.writeHead(closing ? 503 : 200, { ...headers, 'content-type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(stats()));
+      return;
+    }
+    // 브라우저가 방을 만들 때 읽는다(다른 출처의 사이트가 읽으므로 CORS를 연다. 비밀이 아닌 값만 싣는다)
+    if (req.method === 'GET' && path === '/rollout') {
+      res.writeHead(200, { ...headers, 'content-type': 'application/json; charset=utf-8', 'access-control-allow-origin': '*' });
+      res.end(JSON.stringify(rolloutAnswer()));
       return;
     }
     if (req.method === 'GET' && path === '/metrics') {
@@ -470,6 +488,7 @@ export async function startServer(options = {}) {
     clearInterval(heartbeat);
     clearInterval(statsTimer);
     clearInterval(sampleTimer);
+    rollout.close();
     const open = [...conns];
     for (const conn of open) drop(conn, CLOSE.GOING_AWAY, 'server_shutdown');
     // 닫기 인사를 잠깐 기다렸다가 남은 소켓은 끊는다
