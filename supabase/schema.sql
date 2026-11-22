@@ -1,6 +1,16 @@
 -- Date: 06NOV2026
 -- Author: Minkyu Jung
--- Purpose: SKALA 작전 전용 Supabase 프로젝트의 계정 스키마. SQL Editor에서 처음부터 끝까지 실행하며, 여러 번 실행해도 안전하다.
+-- Purpose: 자동으로 만든 전체 스키마 사본. 직접 고치지 않는다. supabase/migrations/의 번호 파일을 순서대로 이어 붙였다.
+--          바꿀 때는 migrations/에 다음 번호 파일을 더하고 node tools/check-migrations.mjs --write 로 이 파일을 다시 만든다.
+--          이미 쓰는 서버에는 아직 실행하지 않은 번호 파일만 SQL Editor에서 실행한다(docs/DB_MIGRATION_SOP.md).
+--          새 Supabase 프로젝트는 이 파일 하나를 처음부터 끝까지 실행해도 된다. 여러 번 실행해도 안전하고 번호도 모두 적힌다.
+
+-- ════════════════ supabase/migrations/0001_baseline.sql ════════════════
+-- Date: 06NOV2026
+-- Author: Minkyu Jung
+-- Purpose: 마이그레이션 0001(기준선). 2026-11-23까지의 supabase/schema.sql 전체에 번호 기록 표(fps_schema_migrations)를 더했다.
+--          실서버에는 이미 이 내용이 있으므로 다시 실행해도 바뀌는 것은 없고 번호 1만 적힌다(docs/DB_MIGRATION_SOP.md).
+--          SKALA 작전 전용 Supabase 프로젝트의 계정 스키마. SQL Editor에서 처음부터 끝까지 실행하며, 여러 번 실행해도 안전하다.
 --          테이블은 직접 접근을 막고 fps_* RPC(SECURITY DEFINER)로만 쓴다. 기기 토큰은 원문 대신 sha256만 저장한다.
 --          닉네임 규칙은 js/account/nickname.js와 글자 단위로 같아야 한다(tests/account.test.mjs가 대조한다).
 --          포인트와 전적은 클라이언트가 계산해 보내지만, 서버가 늘어나는 속도(통으로 채우는 한도)와 새로 산 무기의 가격을 확인해
@@ -12,6 +22,18 @@
 
 create schema if not exists extensions;
 create extension if not exists pgcrypto with schema extensions;
+
+-- ───────────── 마이그레이션 번호 ─────────────
+
+-- 실행한 supabase/migrations/NNNN_*.sql의 번호. 파일마다 맨 끝에서 자기 번호를 한 줄 넣는다(두 번 실행해도 한 줄).
+-- 어디까지 실행했는지는 SQL Editor에서 select max(version) from public.fps_schema_migrations; 로 본다.
+create table if not exists public.fps_schema_migrations (
+  version int primary key,
+  name text not null,
+  applied_at timestamptz not null default now()
+);
+alter table public.fps_schema_migrations enable row level security;
+revoke all on public.fps_schema_migrations from public, anon, authenticated;
 
 -- ───────────── 테이블 ─────────────
 -- 토큰 하나에 한 행. 이름을 바꾸면 같은 행의 name_key가 바뀌므로 이전 이름은 저절로 풀린다.
@@ -1090,3 +1112,6 @@ grant execute on function public.fps_api_open_orders(int) to service_role;
 
 -- API가 새 함수를 바로 보도록 스키마 캐시를 다시 읽게 한다.
 notify pgrst, 'reload schema';
+
+-- ───────────── 이 파일의 번호 ─────────────
+insert into public.fps_schema_migrations (version, name) values (1, 'baseline') on conflict (version) do nothing;
