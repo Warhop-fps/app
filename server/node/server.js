@@ -74,7 +74,9 @@ export async function startServer(options = {}) {
   const tickSamples = createSampler(cfg.hz * 30);
   const rate = createRate({ windowSec: 10 });
   const proc = createProcessStats();
-  const totals = { bytesOut: 0, msgOut: 0, msgIn: 0 };
+  const totals = { bytesOut: 0, msgOut: 0, msgIn: 0, cpuUs: 0 };
+  const cpuNow = () => { const c = process.cpuUsage(); return c.user + c.system; };
+  const cpuStart = cpuNow();
 
   const metrics = createMetrics();
   metrics.declare('skala_connections', 'gauge', '열린 WebSocket 접속 수');
@@ -127,7 +129,8 @@ export async function startServer(options = {}) {
       tickMs: { p50: round3(t.p50), p95: round3(t.p95), max: round3(t.max), n: t.n },
       bytesOutPerSec: Math.round(bps), bytesOutPerPlayerPerSec: players ? Math.round(bps / players) : 0,
       msgOutPerSec: round1(rate.perSec('msgOut')), msgInPerSec: round1(rate.perSec('msgIn')),
-      cpuPercent: round1(p.cpuPercent), rssMb: round1(p.rssBytes / 1048576), heapMb: round1(p.heapUsedBytes / 1048576)
+      // CPU는 최근 10초 평균(1초 값은 흔들린다). 한 코어 = 100
+      cpuPercent: round1(rate.perSec('cpuUs') / 1e4), cpuLastSecPercent: round1(p.cpuPercent), rssMb: round1(p.rssBytes / 1048576), heapMb: round1(p.heapUsedBytes / 1048576)
     };
   }
   function stats() {
@@ -436,8 +439,9 @@ export async function startServer(options = {}) {
     }
   }, cfg.pingIntervalMs);
   const statsTimer = setInterval(reportStats, cfg.statsIntervalMs);
-  rate.mark(totals);
-  const sampleTimer = setInterval(() => { rate.mark(totals); proc.sample(); }, 1000);
+  const markRate = () => { totals.cpuUs = cpuNow() - cpuStart; rate.mark(totals); };
+  markRate();
+  const sampleTimer = setInterval(() => { markRate(); proc.sample(); }, 1000);
   sampleTimer.unref();
 
   await new Promise((resolve, reject) => {

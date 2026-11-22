@@ -1,7 +1,7 @@
 /*
  * Date: 06NOV2026
  * Author: Minkyu Jung
- * Purpose: VM용 Node 어댑터 부품 시험(server/node). 고정 간격 루프, Prometheus 지표 출력, pino 형식 로그, 명령줄·환경 변수 설정을 본다.
+ * Purpose: VM용 Node 어댑터 부품 시험(server/node). 고정 간격 루프, Prometheus 지표 출력, 최근 값 지표(분위수·초당 값·CPU), pino 형식 로그, 명령줄·환경 변수 설정을 본다.
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,6 +10,7 @@ import { createLoop } from '../node/loop.js';
 import { createMetrics } from '../node/metrics.js';
 import { createLogger, memoryStream } from '../node/log.js';
 import { loadConfig } from '../node/config.js';
+import { createProcessStats, createRate, createSampler } from '../node/rolling.js';
 
 describe('loop', () => {
   /** 가짜 시계와 타이머로 루프를 돌린다 */
@@ -90,5 +91,34 @@ describe('metrics·log·config', () => {
     assert.throws(() => loadConfig(['--port', '70000'], {}), /--port/);
     assert.throws(() => loadConfig(['--map', 'nowhere'], {}), /--map/);
     assert.throws(() => loadConfig(['--what'], {}));
+  });
+});
+
+describe('최근 값 지표(rolling)', () => {
+  test('분위수: 최근 size개만 보고 p50·p95·최대를 낸다', () => {
+    const s = createSampler(100);
+    assert.deepEqual(s.summary(), { p50: 0, p95: 0, max: 0, n: 0 });
+    for (let i = 1; i <= 100; i++) s.add(i);
+    assert.deepEqual(s.summary(), { p50: 50, p95: 95, max: 100, n: 100 });
+    for (let i = 0; i < 100; i++) s.add(1);   // 옛 값은 밀려난다
+    assert.deepEqual(s.summary(), { p50: 1, p95: 1, max: 1, n: 100 });
+  });
+
+  test('초당 값: 찍은 누적값의 처음과 끝 차이 / 시간', () => {
+    let t = 0;
+    const r = createRate({ windowSec: 3, now: () => t });
+    r.mark({ b: 0 });
+    assert.equal(r.perSec('b'), 0);
+    for (let i = 1; i <= 5; i++) { t = i * 1000; r.mark({ b: i * 500 }); }
+    assert.equal(r.perSec('b'), 500, '창 밖의 옛 값은 버린다');
+    assert.equal(r.perSec('none'), 0);
+  });
+
+  test('CPU: 지난 간격에 쓴 CPU 시간 / 흐른 시간', () => {
+    let t = 0, cpu = { user: 0, system: 0 };
+    const p = createProcessStats({ now: () => t, cpuUsage: () => cpu, memoryUsage: () => ({ rss: 10, heapUsed: 5 }) });
+    t = 1000; cpu = { user: 200000, system: 50000 };   // 마이크로초: 250 ms 썼다
+    p.sample();
+    assert.deepEqual(p.read(), { cpuPercent: 25, rssBytes: 10, heapUsedBytes: 5 });
   });
 });

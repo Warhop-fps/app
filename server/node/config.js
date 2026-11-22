@@ -49,6 +49,8 @@ const USAGE = `사용법: node server/node.js [옵션]   방 주소: ws://<호�
   --ffa-room-size <n>   개인전 방 정원 (기본 ${DEFAULTS.ffaRoomSize})
   --kill-target <n>     개인전 목표 킬 기본값 5~20 (기본 20)
   --max-rooms <n>       방 수 상한 (기본 ${DEFAULTS.maxRooms})
+  --max-per-ip <n>      한 IP의 동시 접속 (기본 ${DEFAULTS.maxPerIp}. 한 PC에서 봇을 많이 붙이는 부하 측정용으로 올린다)
+  --max-rooms-per-ip <n> 한 IP가 만든 열린 방 수 (기본 ${DEFAULTS.maxRoomsPerIp})
   --max-rewind-ms <n>   되감기 상한 (기본 ${DEFAULTS.maxRewindMs}, 0이면 지연 보정 끔)
   --map <id>            새 방의 기본 맵 (기본 ${DEFAULTS.defaultMap}: ${MAP_CHOICES.join(', ')})
   --mode <team|ffa>     새 방의 기본 모드
@@ -84,7 +86,7 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env) {
     allowPositionals: false,
     options: {
       port: { type: 'string' }, host: { type: 'string' }, hz: { type: 'string' },
-      'room-size': { type: 'string' }, 'ffa-room-size': { type: 'string' }, 'kill-target': { type: 'string' }, 'max-rooms': { type: 'string' }, 'max-rewind-ms': { type: 'string' },
+      'room-size': { type: 'string' }, 'ffa-room-size': { type: 'string' }, 'max-per-ip': { type: 'string' }, 'max-rooms-per-ip': { type: 'string' }, 'kill-target': { type: 'string' }, 'max-rooms': { type: 'string' }, 'max-rewind-ms': { type: 'string' },
       map: { type: 'string' }, mode: { type: 'string' }, ruleset: { type: 'string' },
       origins: { type: 'string' }, 'trust-proxy': { type: 'boolean' }, 'log-level': { type: 'string' },
       'round-sec': { type: 'string' }, 'loadout-sec': { type: 'string' }, 'round-end-sec': { type: 'string' },
@@ -97,6 +99,8 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env) {
   if (values.host ?? env.HOST) c.host = values.host ?? env.HOST;
   if (values.hz !== undefined) c.hz = int('--hz', values.hz, 10, 128);
   if (values['room-size'] !== undefined) c.roomSize = int('--room-size', values['room-size'], 2, 16);
+  if (values['max-per-ip'] !== undefined) c.maxPerIp = int('--max-per-ip', values['max-per-ip'], 1, 10000);
+  if (values['max-rooms-per-ip'] !== undefined) c.maxRoomsPerIp = int('--max-rooms-per-ip', values['max-rooms-per-ip'], 1, 10000);
   if (values['ffa-room-size'] !== undefined) c.ffaRoomSize = int('--ffa-room-size', values['ffa-room-size'], 2, 16);
   if (values['kill-target'] !== undefined) c.defaultKillTarget = int('--kill-target', values['kill-target'], 5, 20);
   if (values['max-rooms'] !== undefined) c.maxRooms = int('--max-rooms', values['max-rooms'], 1, 10000);

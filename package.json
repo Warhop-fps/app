@@ -17,6 +17,7 @@
     "server": "node server/node.js",
     "server:install": "npm --prefix server ci",
     "server:bots": "node server/tools/bots.js",
+    "server:load": "node server/tools/load.js",
     "test:server": "node --test \"server/test/*.test.mjs\""
   },
   "engines": {
