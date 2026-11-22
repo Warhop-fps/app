@@ -14,13 +14,20 @@ concurrency:
 jobs:
   deploy:
     # 소유자가 저장소 변수 CLOUDFLARE_PAGES_PROJECT를 넣기 전(도메인 이전 전)에는 돌지 않는다(docs/MIGRATION.md)
+    # 2026-11-22부터 운영 정적 사이트는 AWS(deploy-aws-static.yml, 변수 AWS_STATIC_BUCKET)다. 두 변수를 함께 넣으면 둘 다 실패한다.
     if: ${{ vars.CLOUDFLARE_PAGES_PROJECT != '' }}
     runs-on: ubuntu-latest
     env:
       CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CF_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
+      AWS_BUCKET: ${{ vars.AWS_STATIC_BUCKET }}
     steps:
+      - name: Refuse double production deploy
+        if: env.AWS_BUCKET != ''
+        run: |
+          echo '::error::Both CLOUDFLARE_PAGES_PROJECT and AWS_STATIC_BUCKET are set. Delete one repository variable so only one service deploys production (docs/AWS_STATIC_SOP.md).'
+          exit 1
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0

@@ -8,6 +8,8 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
+/** 개인정보 처리방침의 '게임 파일 제공' 업체 이름. 2026-11-22 결정: AWS CloudFront + S3(docs/AWS_STATIC_SOP.md) */
+export const STATIC_HOST = 'Amazon Web Services (CloudFront·S3)';
 const FILES = ['index.html', 'js/config.js', 'server/relay/wrangler.toml', 'server/api/wrangler.toml', 'server/relay/src/rules.js', '_headers', 'privacy.html', 'README.md', 'dev/notice.html'];
 
 function hostname(value) {
@@ -56,7 +58,7 @@ export function setDomain(root, options, log = console.log) {
   next['dev/notice.html'] = sources['dev/notice.html'].replace(/connect-src\s+([^;"\r\n]+)/, `connect-src 'self' https://${relay} wss://${relay}`);
   for (const file of ['server/relay/wrangler.toml', 'server/api/wrangler.toml']) next[file] = sources[file].replace(/(ALLOWED_ORIGINS\s*=\s*")([^"]+)(")/, (_, start, list, end) => start + origins(list) + end);
   next['server/relay/src/rules.js'] = sources['server/relay/src/rules.js'].replace(/(export const DEFAULT_ORIGINS = ')([^']+)(';)/, (_, start, list, end) => start + origins(list) + end);
-  next['privacy.html'] = sources['privacy.html'].replace(/<tr><td>(?:GitHub Pages|Cloudflare Pages)<\/td><td>게임 파일 제공[^<]*<\/td><\/tr>/, `<tr><td>Cloudflare Pages</td><td>게임 파일 제공 (https://${game})</td></tr>`);
+  next['privacy.html'] = sources['privacy.html'].replace(/<tr><td>(?:GitHub Pages|Cloudflare Pages|Amazon Web Services \(CloudFront·S3\))<\/td><td>게임 파일 제공[^<]*<\/td><\/tr>/, `<tr><td>${STATIC_HOST}</td><td>게임 파일 제공 (https://${game})</td></tr>`);
   next['README.md'] = sources['README.md'].replace(/(\*\*플레이: <)https:\/\/[^>]+(>\*\*)/, `$1https://${game}/$2`);
   const changed = FILES.filter((file) => next[file] !== sources[file]);
   for (const file of changed) {
@@ -67,7 +69,7 @@ export function setDomain(root, options, log = console.log) {
   }
   if (!options.dryRun) for (const file of changed) writeFileSync(resolve(root, file), next[file]);
   log(`${options.dryRun ? '미리보기' : '기록'}: ${changed.length}개 파일`);
-  log(`수동 점검표:\n- DNS: ${game} → Pages, ${api}·${relay} → Workers 맞춤 도메인, ${gameServer} → EC2 고정 IP (DNS only)\n- Cloudflare: Pages 맞춤 도메인 ${game}, Worker skala-api → ${api}, Worker skala-relay → ${relay}, 각각 배포\n- Google: 승인된 JavaScript 원본 https://${game}, 리디렉션 URI https://${game}/\n- Kakao: 웹 사이트 도메인 https://${game}, Redirect URI https://${game}/\n- Toss: 웹훅 https://${api}/pay/webhook, 테스트 결제·환불 확인\n- GitHub Pages: 새 주소 안내 유지, 로그인은 새 주소에서 다시 연결 (브라우저 저장소는 자동 이전되지 않음)`);
+  log(`수동 점검표:\n- DNS: ${game} → CloudFront dxxxx.cloudfront.net CNAME (DNS only), ${api}·${relay} → Workers 맞춤 도메인, ${gameServer} → EC2 고정 IP (DNS only)\n- AWS: infra/aws/static에서 site_domain=${game}로 apply → 인증서 검증 CNAME 추가 → attach_site_domain=true로 다시 apply. _headers가 바뀌었으니 배포 전에 apply (docs/AWS_STATIC_SOP.md)\n- Cloudflare: Worker skala-api → ${api}, Worker skala-relay → ${relay}, 각각 배포\n- Google: 승인된 JavaScript 원본 https://${game}, 리디렉션 URI https://${game}/\n- Kakao: 웹 사이트 도메인 https://${game}, Redirect URI https://${game}/\n- Toss: 웹훅 https://${api}/pay/webhook, 테스트 결제·환불 확인\n- GitHub Pages: 새 주소 안내 유지, 로그인은 새 주소에서 다시 연결 (브라우저 저장소는 자동 이전되지 않음)`);
   return { changed, hosts: { game, api, relay, gameServer } };
 }
 

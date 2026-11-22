@@ -76,7 +76,9 @@ test('dry-run은 파일을 보존하고 예상 변경과 외부 콘솔 점검표
   assert.match(log, /Google:.*https:\/\/example.io\//);
   assert.match(log, /Kakao:/);
   assert.match(log, /Toss: 웹훅 https:\/\/api.example.io\/pay\/webhook/);
-  assert.match(log, /DNS:/);
+  assert.match(log, /DNS: example.io → CloudFront .*\(DNS only\)/);
+  assert.match(log, /AWS: infra\/aws\/static에서 site_domain=example.io/);
+  assert.doesNotMatch(log, /Pages 맞춤 도메인/);
 });
 
 test('주소·Origin·CSP·문서를 함께 바꾸며 반복 실행해도 차이가 없다', (t) => {
@@ -96,7 +98,7 @@ test('주소·Origin·CSP·문서를 함께 바꾸며 반복 실행해도 차이
     assert.ok(content(dir, file).includes('http://localhost:*'));
   }
   assert.equal(connect(metaCsp(content(dir, 'dev/notice.html'))), "connect-src 'self' https://relay.example.io wss://relay.example.io");
-  assert.match(content(dir, 'privacy.html'), /Cloudflare Pages<\/td><td>게임 파일 제공 \(https:\/\/example.io\)/);
+  assert.match(content(dir, 'privacy.html'), /Amazon Web Services \(CloudFront·S3\)<\/td><td>게임 파일 제공 \(https:\/\/example.io\)/);
   assert.match(content(dir, 'README.md'), /플레이: <https:\/\/example.io\/>/);
   assert.deepEqual(setDomain(dir, options, quiet).changed, []);
 });

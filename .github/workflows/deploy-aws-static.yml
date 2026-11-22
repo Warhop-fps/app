@@ -1,0 +1,78 @@
+# Date: 06NOV2026
+# Author: Minkyu Jung
+# Purpose: 검사를 통과한 공개 파일만 S3에 올리고 CloudFront의 HTML 캐시를 비운다. 저장소 변수가 없으면 안전하게 건너뛴다.
+#          비밀 키는 쓰지 않는다(GitHub OIDC로 infra/aws/static의 배포 역할을 잠깐 빌린다). 절차: docs/AWS_STATIC_SOP.md
+name: Deploy AWS static site
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: static-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    # 운영 배포는 이 워크플로와 deploy-pages.yml 중 하나만 켠다. AWS_STATIC_BUCKET이 있으면 이쪽, CLOUDFLARE_PAGES_PROJECT가 있으면 Pages 쪽이다.
+    # environment를 쓰지 않는다. 쓰면 OIDC sub가 바뀌어 역할 신뢰 조건(main 브랜치)에 맞지 않는다.
+    runs-on: ubuntu-latest
+    env:
+      BUCKET: ${{ vars.AWS_STATIC_BUCKET }}
+      DISTRIBUTION_ID: ${{ vars.AWS_STATIC_DISTRIBUTION_ID }}
+      ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      REGION: ${{ vars.AWS_STATIC_REGION }}
+      PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
+    steps:
+      - name: Skip unconfigured deployment
+        id: gate
+        run: |
+          if [ -z "$BUCKET" ] || [ -z "$DISTRIBUTION_ID" ] || [ -z "$ROLE_ARN" ] || [ -z "$REGION" ]; then
+            echo '::notice::AWS static deployment skipped - set repository variables AWS_STATIC_BUCKET, AWS_STATIC_DISTRIBUTION_ID, AWS_DEPLOY_ROLE_ARN and AWS_STATIC_REGION (docs/AWS_STATIC_SOP.md).'
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Refuse double production deploy
+        if: env.BUCKET != '' && env.PAGES_PROJECT != ''
+        run: |
+          echo '::error::Both AWS_STATIC_BUCKET and CLOUDFLARE_PAGES_PROJECT are set. Delete one repository variable so only one service deploys production (docs/AWS_STATIC_SOP.md).'
+          exit 1
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.ready == 'true'
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.ready == 'true'
+        with:
+          node-version: '24'
+      - name: Check
+        if: steps.gate.outputs.ready == 'true'
+        run: npm run check
+      - name: Build dist
+        if: steps.gate.outputs.ready == 'true'
+        run: node tools/build-site.mjs
+      - name: Assume deploy role (OIDC)
+        if: steps.gate.outputs.ready == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_STATIC_REGION }}
+          role-session-name: skala-fps-static-${{ github.run_id }}
+      - name: Find CloudFront address
+        if: steps.gate.outputs.ready == 'true'
+        run: echo "SITE_URL=https://$(aws cloudfront get-distribution --id "$DISTRIBUTION_ID" --query Distribution.DomainName --output text)/" >> "$GITHUB_ENV"
+      # _headers를 바꿨는데 infra/aws/static을 아직 apply하지 않았으면, 새 파일이 옛 CSP에 막히기 전에 멈춘다.
+      - name: Check live headers before upload
+        if: steps.gate.outputs.ready == 'true'
+        run: node tools/aws-static.mjs check-headers --url "$SITE_URL" --before-deploy
+      - name: Upload to S3
+        if: steps.gate.outputs.ready == 'true'
+        run: node tools/aws-static.mjs sync --bucket "$BUCKET"
+      - name: Invalidate HTML cache
+        if: steps.gate.outputs.ready == 'true'
+        run: node tools/aws-static.mjs invalidate --distribution "$DISTRIBUTION_ID"
+      - name: Check live headers after upload
+        if: steps.gate.outputs.ready == 'true'
+        run: node tools/aws-static.mjs check-headers --url "$SITE_URL" --tries 6 --wait 10
