@@ -21,9 +21,11 @@
  *   POST /pay/webhook               토스 웹훅(PAYMENT_STATUS_CHANGED)
  *   POST /pay/cancel                { token, orderId }     → { ok, coins } | { ok:false, error }
  *   POST /shop/coins                { token, itemId }      → { ok, coins, spent, owned } | { ok:false, error }
+ *   POST /v1/events                 { anonId, sessionId, events:[…] } → { ok, n } | { ok:false, error }  게임 사용 기록(events.js)
  */
 import * as auth from './auth.js';
 import { createDb } from './db.js';
+import * as events from './events.js';
 import { corsHeaders, json, originAllowed, readJson } from './http.js';
 import { enabledProviders, publicProvider } from './oauth.js';
 import * as pay from './pay.js';
@@ -37,7 +39,8 @@ const POST_ROUTES = Object.freeze({
   '/me': auth.me,
   '/pay/orders': pay.createOrder,
   '/pay/cancel': pay.cancelOrder,
-  '/shop/coins': pay.buyWithCoins
+  '/shop/coins': pay.buyWithCoins,
+  '/v1/events': events.ingest
 });
 
 const defaultLog = (line) => console.log(JSON.stringify(line));
@@ -125,6 +128,7 @@ export async function route(request, env, deps) {
       const handler = Object.prototype.hasOwnProperty.call(POST_ROUTES, url.pathname) ? POST_ROUTES[url.pathname] : null;
       if (!handler) return withCors(json({ ok: false, error: 'not_found' }, 404));
       if (!originAllowed(origin, env.ALLOWED_ORIGINS)) return json({ ok: false, error: 'origin_not_allowed' }, 403);
+      if (handler === events.ingest) return withCors(await events.ingest(request, ctx));   // 본문 한도가 달라 직접 읽는다
       const body = await readJson(request);
       if (!body) return withCors(json({ ok: false, error: 'BAD_REQUEST' }, 400));
       return withCors(await handler(body, ctx));
