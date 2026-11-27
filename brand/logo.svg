@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>Warhop</title>
+  <rect width="512" height="512" fill="#0B0F14"/>
+  <polygon points="256,34 446,96 446,286 256,478 66,286 66,96" fill="#131B25" stroke="#D8E1EA" stroke-width="22" stroke-linejoin="round"/>
+  <g fill="none" stroke="#E8A33D">
+    <circle cx="256" cy="142" r="52" stroke-width="16"/>
+    <g stroke-width="14" stroke-linecap="butt"><line x1="256" y1="64" x2="256" y2="108"/><line x1="256" y1="176" x2="256" y2="226"/><line x1="160" y1="142" x2="204" y2="142"/><line x1="308" y1="142" x2="352" y2="142"/></g>
+  </g>
+  <circle cx="256" cy="142" r="10" fill="#E8A33D"/>
+  <polygon points="150,240 198,240 221,318 242,262 270,262 291,318 314,240 362,240 318,378 276,378 256,316 236,378 194,378" fill="#E8A33D"/>
+</svg>
