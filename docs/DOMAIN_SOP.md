@@ -54,73 +54,122 @@
 
 ## 4. 단계별
 
-### 4.1 Worker 맞춤 도메인 (대시보드)
+### 4.1 Worker 두 개에 새 주소 붙이기 (브라우저, 5분)
 
-1. dash.cloudflare.com → **Workers & Pages** → `skala-api` → **Settings** → **Domains & Routes** → **Add** → **Custom domain** → `warhop-api.minkyulabs.com` → Add.
-2. 같은 방법으로 `skala-relay`에 `warhop-relay.minkyulabs.com`을 붙인다.
-3. 1~2분 뒤 확인:
+**A. API Worker**
+
+1. 브라우저 주소창에 아래를 붙여 넣고 엔터. (Cloudflare 로그인 화면이 나오면 k5until30@naver.com 계정으로 로그인)
+   `https://dash.cloudflare.com/3aff38477b2f1e9cb5c359b99f5999f9/workers-and-pages`
+2. 목록에서 **skala-api**를 누른다.
+3. 위쪽 탭에서 **Settings**(설정)를 누른다.
+4. **Domains & Routes**(도메인 및 경로) 칸 오른쪽의 **+ Add**(추가)를 누른다.
+5. 오른쪽에 창이 열리면 **Custom domain**(사용자 지정 도메인)을 고른다.
+6. 입력칸에 `warhop-api.minkyulabs.com`을 쓰고 **Add domain**(도메인 추가)을 누른다.
+7. 목록에 `warhop-api.minkyulabs.com`이 생기면 끝. 처음엔 "Initializing"·"Pending"으로 보이다가 몇 분 뒤 "Active"가 된다.
+
+**B. 중계 Worker**
+
+1. 다시 `https://dash.cloudflare.com/3aff38477b2f1e9cb5c359b99f5999f9/workers-and-pages`
+2. **skala-relay** → **Settings** → **Domains & Routes** → **+ Add** → **Custom domain**
+3. `warhop-relay.minkyulabs.com` 입력 → **Add domain**
+
+**C. 확인** (2~5분 뒤): 브라우저 새 탭에 아래 두 주소를 하나씩 연다.
+
+- `https://warhop-api.minkyulabs.com/health` → 화면에 `{"ok":true,"service":"skala-api"}`
+- `https://warhop-relay.minkyulabs.com/health` → 화면에 `{"ok":true}` 비슷한 글
+
+인증서 오류 화면이 나오면 5~10분 더 기다렸다 새로고침. 지금 돌아가는 옛 `workers.dev` 주소는 그대로라 이 단계로 깨지는 것은 없다.
+
+### 4.2 터미널 열기와 코드 위치
+
+1. Windows 시작 버튼 → **PowerShell** 실행 (또는 이 앱의 Terminal 패널).
+2. 프로젝트 폴더로 이동:
 
 ```powershell
-curl.exe -s https://warhop-api.minkyulabs.com/health
+cd E:\jobFolder\skala-data\team-project\fps
 ```
+
+3. 지금 브랜치 확인:
 
 ```powershell
-curl.exe -s https://warhop-relay.minkyulabs.com/health
+git branch --show-current
 ```
 
-성공: `{"ok":true,...}`. 옛 `*.workers.dev` 주소도 그대로 살아 있으니 지금 게임에는 영향이 없다.
-
-### 4.2 코드 받기
-
-```powershell
-git fetch origin
-```
+`feature/minkyulabs-domain`이 나오면 그대로 다음 단계. 다른 이름이면:
 
 ```powershell
 git switch feature/minkyulabs-domain
 ```
 
-(PR로 main에 합친 뒤라면 `git switch main` 후 `git pull`.)
+### 4.3 Worker 다시 배포 (터미널, 3분)
 
-### 4.3 Worker 다시 배포
+새 게임 주소를 허용 목록에 넣으려면 Worker를 다시 올려야 한다. 비밀 값(secret)은 그대로 남는다.
 
 ```powershell
 cd server/api; npx wrangler deploy; cd ../..
 ```
 
+성공: 끝부분에 `Deployed skala-api triggers`와 `https://skala-api.skala-fps.workers.dev`, `warhop-api.minkyulabs.com`이 보인다.
+
 ```powershell
 cd server/relay; npx wrangler deploy; cd ../..
 ```
 
-성공: `Deployed skala-api triggers` 같은 줄과 주소 목록. 문제가 생기면 그 폴더에서 `npx wrangler rollback`으로 바로 전 버전으로 돌린다. 배포 전에 `npx wrangler deployments list`로 지금 버전을 적어 두면 좋다.
+성공: `Deployed skala-relay triggers`.
 
-### 4.4 Pages에 게임 올리기
+브라우저 창이 열리며 Cloudflare 로그인을 물으면 **Allow**(허용)를 누른다. 배포 뒤 이상하면 그 폴더에서 `npx wrangler rollback` 한 줄로 바로 전 버전으로 돌아간다.
+
+### 4.4 게임 파일 올리기 (터미널, 5분)
 
 ```powershell
 node tools/build-site.mjs
 ```
 
+성공: `dist/ 배포 파일: index.html, ...` 한 줄.
+
 ```powershell
 npx wrangler pages project create warhop --production-branch main
 ```
+
+성공: `Successfully created the 'warhop' project`. ("already exists"면 이미 만든 것이니 넘어간다.)
 
 ```powershell
 npx wrangler pages deploy dist --project-name warhop --branch main
 ```
 
-성공: 마지막에 `https://xxxx.warhop.pages.dev` 주소가 나온다. 열어서 메뉴가 뜨는지 본다(로그인은 아직 안 될 수 있다. 5단계 뒤에 된다).
+성공: 마지막 줄에 `https://xxxxxxxx.warhop.pages.dev` 주소. 그 주소를 브라우저로 열어 게임 메뉴가 뜨는지 본다.
 
-### 4.5 Pages 맞춤 도메인
+### 4.5 게임에 warhop.minkyulabs.com 붙이기 (브라우저, 3분)
 
-Workers & Pages → `warhop` → **Custom domains** → **Set up a custom domain** → `warhop.minkyulabs.com` → Activate. 몇 분 뒤 `https://warhop.minkyulabs.com/`이 열린다.
+1. `https://dash.cloudflare.com/3aff38477b2f1e9cb5c359b99f5999f9/workers-and-pages`
+2. 목록에서 **warhop**(Pages 프로젝트, 방금 만든 것)을 누른다.
+3. 위쪽 탭 **Custom domains**(사용자 지정 도메인) → **Set up a custom domain**(사용자 지정 도메인 설정).
+4. `warhop.minkyulabs.com` 입력 → **Continue**(계속).
+5. 다음 화면에서 DNS 기록을 자동으로 만들겠다고 나오면 **Activate domain**(도메인 활성화).
+6. 상태가 "Active"가 되면 `https://warhop.minkyulabs.com/`을 연다. 게임 메뉴가 뜨면 성공.
 
-### 4.6 로그인·결제 주소
+### 4.6 로그인·결제에 새 주소 등록 (브라우저, 10분)
 
-| 어디 | 바꿀 것 |
-|---|---|
-| Google Cloud 콘솔 → API 및 서비스 → 사용자 인증 정보 → OAuth 클라이언트 | 승인된 JavaScript 원본 `https://warhop.minkyulabs.com`, 승인된 리디렉션 URI `https://warhop.minkyulabs.com/` 추가 |
-| Kakao Developers → 내 애플리케이션 → 플랫폼(Web) / 카카오 로그인 | 사이트 도메인 `https://warhop.minkyulabs.com`, Redirect URI `https://warhop.minkyulabs.com/` 추가 |
-| 토스페이먼츠 개발자센터 → 웹훅 | `https://warhop-api.minkyulabs.com/pay/webhook` (아직 미등록이었다면 이번에 등록) |
+**A. 구글 로그인**
+
+1. `https://console.cloud.google.com/apis/credentials` (게임용 구글 계정으로 로그인, 위쪽 프로젝트 이름이 게임 프로젝트인지 확인)
+2. **OAuth 2.0 클라이언트 ID** 목록에서 게임용 클라이언트(웹 애플리케이션) 이름을 누른다.
+3. **승인된 JavaScript 원본** → **+ URI 추가** → `https://warhop.minkyulabs.com` (끝에 `/` 없음)
+4. **승인된 리디렉션 URI** → **+ URI 추가** → `https://warhop.minkyulabs.com/` (끝에 `/` 있음)
+5. 맨 아래 **저장**. 반영에 5분~몇 시간 걸릴 수 있다.
+
+**B. 카카오 로그인**
+
+1. `https://developers.kakao.com/console/app` → 게임 앱 선택
+2. 왼쪽 **앱 설정 → 플랫폼** → **Web** 칸의 **수정**(또는 **사이트 도메인 등록**) → 새 줄에 `https://warhop.minkyulabs.com` → **저장**
+3. 왼쪽 **제품 설정 → 카카오 로그인** → 아래 **Redirect URI** → **수정**(또는 **등록**) → 새 줄에 `https://warhop.minkyulabs.com/` → **저장**
+
+(콘솔 메뉴 이름은 카카오가 가끔 바꾼다. 못 찾으면 페이지에서 "Redirect URI"를 Ctrl+F로 찾는다.)
+
+**C. 토스 결제 웹훅**
+
+1. `https://developers.tosspayments.com` → 로그인 → 위쪽 **개발자센터** → 왼쪽 **웹훅**
+2. **웹훅 등록하기** → 이름 `warhop`, URL `https://warhop-api.minkyulabs.com/pay/webhook`, 이벤트 **PAYMENT_STATUS_CHANGED** 체크 → **등록**
 
 ### 4.7 확인
 
