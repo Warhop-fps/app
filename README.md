@@ -2,7 +2,7 @@
 
 브라우저에서 바로 하는 빠른 FPS입니다. 빌드 없이 three.js와 ES 모듈로 돌아가고, GitHub Pages에 그대로 올릴 수 있습니다.
 
-**플레이: <https://jungmk0720.github.io/skala-fps/>** (2026-11-24부터 옛 계정 정지로 내려감. 저장소는 <https://github.com/Warhop-fps/app>로 옮겼다. 절차는 `docs/ORG_AWS_SOP.md`)
+**플레이: <https://warhop.minkyulabs.com/>** (준비 중, `docs/DOMAIN_SOP.md`. 옛 주소 jungmk0720.github.io는 2026-11-24부터 계정 정지로 내려감. 저장소는 <https://github.com/Warhop-fps/app>로 옮겼다. 절차는 `docs/ORG_AWS_SOP.md`)
 
 ## 실행
 

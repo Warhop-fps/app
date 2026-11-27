@@ -53,7 +53,7 @@ export const LIMITS = Object.freeze({
 });
 
 /** 브라우저 Origin 허용 목록의 기본값. wrangler.toml의 ALLOWED_ORIGINS가 있으면 그것을 쓴다 */
-export const DEFAULT_ORIGINS = 'https://jungmk0720.github.io,https://*.game-files.crazygames.com,http://localhost:*,http://127.0.0.1:*';
+export const DEFAULT_ORIGINS = 'https://jungmk0720.github.io,https://*.game-files.crazygames.com,http://localhost:*,http://127.0.0.1:*,https://warhop.minkyulabs.com';
 
 /* ---------------- 허브 이름 ---------------- */
 

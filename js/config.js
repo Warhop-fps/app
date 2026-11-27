@@ -18,7 +18,7 @@ window.SKALA_CONFIG = {
     anonKey: 'sb_publishable_rJg-uWBapq4V37XcAzLpZQ_Gp4p2Zb4'
   },
   transport: 'relay',
-  relay: { url: 'https://skala-relay.skala-fps.workers.dev', hz: 20 },
+  relay: { url: 'https://warhop-relay.minkyulabs.com', hz: 20 },
   notice: { key: 'BNK5OrvWuP8gFyH0iyGnJUpzQceucA1qDLnpzzJMRoN1x4xwJyR2OSWMGiBZZ1yg4K12I9Pg6xeoQyAqvS1tsko' },
-  api: { url: 'https://skala-api.skala-fps.workers.dev' }
+  api: { url: 'https://warhop-api.minkyulabs.com' }
 };

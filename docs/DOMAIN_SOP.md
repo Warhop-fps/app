@@ -1,0 +1,169 @@
+<!--
+  Date: 06NOV2026
+  Author: Minkyu Jung
+  Purpose: 소유자 도메인 minkyulabs.com의 하위 주소로 게임을 다시 여는 절차(SOP). 오늘 바로 되는 Cloudflare 길(1단계)과 뒤에 AWS로 바꾸는 길(2단계), 용어, 값 지도, 단계별 명령·확인, 실패 표, 되돌리기.
+-->
+# minkyulabs.com으로 게임 다시 열기 (SOP)
+
+## 0. 한눈에
+
+| 항목 | 내용 |
+|---|---|
+| 왜 | 옛 주소 jungmk0720.github.io가 계정 정지로 2026-11-24부터 404. 소유자 도메인 minkyulabs.com이 이미 Cloudflare(이 PC의 wrangler와 같은 계정)에 있다 |
+| 건드리지 않는 것 | `minkyulabs.com` 자체(스튜디오 사이트, Worker `minkyulabs`)와 메일 라우팅(MX) |
+| 새 주소 | 게임 `warhop.minkyulabs.com`, API `warhop-api.minkyulabs.com`, 중계 `warhop-relay.minkyulabs.com`, 나중 EC2 `warhop-game.minkyulabs.com` |
+| 왜 `warhop-api`처럼 한 단계인가 | Cloudflare 무료 인증서는 `*.minkyulabs.com` 한 단계만 덮는다. `api.warhop.minkyulabs.com`처럼 두 단계면 HTTPS가 깨진다 |
+| 코드 | 브랜치 `feature/minkyulabs-domain`(2026-11-27, `tools/set-domain.mjs --keep-old`로 만듦, 시험 통과). 옛 workers.dev 주소도 계속 허용한다 |
+| 1단계 (오늘) | 정적 파일 Cloudflare Pages, Worker 두 개 그대로. 약 30분, 비용 0원 |
+| 2단계 (나중) | `warhop` DNS만 CloudFront로 돌리고 `warhop-game`을 EC2에 연결 (`docs/ORG_AWS_SOP.md`) |
+
+## 1. 용어 풀이
+
+| 말 | 뜻 |
+|---|---|
+| 하위 주소(서브도메인) | `warhop.minkyulabs.com`처럼 내 도메인 앞에 이름을 붙인 주소. 따로 살 필요 없다 |
+| 맞춤 도메인(Custom domain) | Worker나 Pages에 내 주소를 붙이는 Cloudflare 기능. DNS 기록과 인증서를 Cloudflare가 알아서 만든다 |
+| Pages | 정적 파일(HTML·JS·이미지)을 올려 두는 Cloudflare 서비스. 무료 |
+| ALLOWED_ORIGINS | Worker가 "이 주소에서 온 요청만 받는다"고 정한 목록. 새 게임 주소를 넣고 **Worker를 다시 배포해야** 적용된다 |
+| 리디렉션 URI | 구글·카카오 로그인이 끝난 뒤 돌아올 주소. 콘솔에 글자 그대로 등록해야 한다 |
+| DNS only(회색 구름) | Cloudflare가 중간에서 프록시하지 않고 IP만 알려 주는 모드. EC2 게임 서버에 쓴다 |
+
+## 2. 값 지도
+
+| 값 | 어디 | 값 |
+|---|---|---|
+| Cloudflare 계정 ID | `npx wrangler whoami` | `3aff38477b2f1e9cb5c359b99f5999f9` (비밀 아님) |
+| Pages 프로젝트 이름 | 새로 만든다 | `warhop` |
+| 게임 주소 | Pages 맞춤 도메인 | `https://warhop.minkyulabs.com/` |
+| API 주소 | Worker `skala-api` 맞춤 도메인, `js/config.js` | `https://warhop-api.minkyulabs.com` |
+| 중계 주소 | Worker `skala-relay` 맞춤 도메인, `js/config.js` | `https://warhop-relay.minkyulabs.com` |
+| 운영자 공지 패널 | 배포 뒤 | `https://warhop.minkyulabs.com/dev/notice.html` |
+| 토스 웹훅 | 토스 개발자센터 | `https://warhop-api.minkyulabs.com/pay/webhook` |
+
+## 3. 체크리스트 (순서 중요: 주소를 먼저 붙이고 게임을 나중에 올린다)
+
+- [ ] 1. Worker 두 개에 맞춤 도메인 붙이기 (대시보드, 5분)
+- [ ] 2. 코드 브랜치 받기
+- [ ] 3. Worker 두 개 다시 배포 (새 게임 주소 허용)
+- [ ] 4. Pages 프로젝트 만들고 게임 올리기
+- [ ] 5. Pages에 `warhop.minkyulabs.com` 붙이기
+- [ ] 6. 구글·카카오·토스 주소 바꾸기
+- [ ] 7. 두 기기로 한 판 해 보기
+- [ ] 8. GitHub Actions 자동 배포 연결 (선택)
+- [ ] 9. 공지 보내기
+
+## 4. 단계별
+
+### 4.1 Worker 맞춤 도메인 (대시보드)
+
+1. dash.cloudflare.com → **Workers & Pages** → `skala-api` → **Settings** → **Domains & Routes** → **Add** → **Custom domain** → `warhop-api.minkyulabs.com` → Add.
+2. 같은 방법으로 `skala-relay`에 `warhop-relay.minkyulabs.com`을 붙인다.
+3. 1~2분 뒤 확인:
+
+```powershell
+curl.exe -s https://warhop-api.minkyulabs.com/health
+```
+
+```powershell
+curl.exe -s https://warhop-relay.minkyulabs.com/health
+```
+
+성공: `{"ok":true,...}`. 옛 `*.workers.dev` 주소도 그대로 살아 있으니 지금 게임에는 영향이 없다.
+
+### 4.2 코드 받기
+
+```powershell
+git fetch origin
+```
+
+```powershell
+git switch feature/minkyulabs-domain
+```
+
+(PR로 main에 합친 뒤라면 `git switch main` 후 `git pull`.)
+
+### 4.3 Worker 다시 배포
+
+```powershell
+cd server/api; npx wrangler deploy; cd ../..
+```
+
+```powershell
+cd server/relay; npx wrangler deploy; cd ../..
+```
+
+성공: `Deployed skala-api triggers` 같은 줄과 주소 목록. 문제가 생기면 그 폴더에서 `npx wrangler rollback`으로 바로 전 버전으로 돌린다. 배포 전에 `npx wrangler deployments list`로 지금 버전을 적어 두면 좋다.
+
+### 4.4 Pages에 게임 올리기
+
+```powershell
+node tools/build-site.mjs
+```
+
+```powershell
+npx wrangler pages project create warhop --production-branch main
+```
+
+```powershell
+npx wrangler pages deploy dist --project-name warhop --branch main
+```
+
+성공: 마지막에 `https://xxxx.warhop.pages.dev` 주소가 나온다. 열어서 메뉴가 뜨는지 본다(로그인은 아직 안 될 수 있다. 5단계 뒤에 된다).
+
+### 4.5 Pages 맞춤 도메인
+
+Workers & Pages → `warhop` → **Custom domains** → **Set up a custom domain** → `warhop.minkyulabs.com` → Activate. 몇 분 뒤 `https://warhop.minkyulabs.com/`이 열린다.
+
+### 4.6 로그인·결제 주소
+
+| 어디 | 바꿀 것 |
+|---|---|
+| Google Cloud 콘솔 → API 및 서비스 → 사용자 인증 정보 → OAuth 클라이언트 | 승인된 JavaScript 원본 `https://warhop.minkyulabs.com`, 승인된 리디렉션 URI `https://warhop.minkyulabs.com/` 추가 |
+| Kakao Developers → 내 애플리케이션 → 플랫폼(Web) / 카카오 로그인 | 사이트 도메인 `https://warhop.minkyulabs.com`, Redirect URI `https://warhop.minkyulabs.com/` 추가 |
+| 토스페이먼츠 개발자센터 → 웹훅 | `https://warhop-api.minkyulabs.com/pay/webhook` (아직 미등록이었다면 이번에 등록) |
+
+### 4.7 확인
+
+- 두 기기(PC·휴대폰)로 `https://warhop.minkyulabs.com/` 접속 → 같은 방에서 한 판.
+- 구글 또는 카카오로 로그인 → 포인트·상점이 보이는지.
+- 실패하면 브라우저 F12 → Console에 빨간 줄이 있는지 보고 8절 표.
+
+### 4.8 자동 배포 (선택)
+
+Warhop-fps/app → Settings → Secrets and variables → Actions:
+- Secrets: `CLOUDFLARE_API_TOKEN`(대시보드 → My Profile → API Tokens → "Edit Cloudflare Workers" 템플릿, Pages 권한 포함), `CLOUDFLARE_ACCOUNT_ID` = 2절 값
+- Variables: `CLOUDFLARE_PAGES_PROJECT` = `warhop`
+
+이후 main에 머지할 때마다 `.github/workflows/deploy-pages.yml`이 자동으로 올린다.
+
+### 4.9 공지
+
+운영자 패널 `https://warhop.minkyulabs.com/dev/notice.html`에서 "새 주소: warhop.minkyulabs.com" 공지를 보낸다(`docs/NOTICE.md`). **옛 주소의 브라우저 저장소(기기 토큰)는 넘어오지 않는다.** 구글·카카오를 연결한 사람은 다시 로그인하면 그대로이고, 연결 안 한 사람은 진행 상황이 새로 시작된다.
+
+## 5. 2단계: AWS로 바꿀 때
+
+1. `docs/AWS_STATIC_SOP.md`대로 CloudFront + S3를 만들고, 인증서는 `warhop.minkyulabs.com`으로 받는다.
+2. Pages 맞춤 도메인에서 `warhop.minkyulabs.com`을 빼고, DNS에 `warhop` CNAME → CloudFront 주소를 넣는다. 주소가 그대로라 사용자도 OAuth도 바꿀 것이 없다.
+3. 게임 서버 EC2를 만든 뒤 DNS에 `warhop-game` A → EIP, **DNS only(회색 구름)**.
+
+## 6. 비용
+
+1단계는 0원이다(Pages·Worker 무료 구간, 도메인은 이미 보유). 2단계 비용은 `docs/ORG_AWS_SOP.md` 7절.
+
+## 7. 되돌리기
+
+- 게임: Pages → `warhop` → Deployments → 이전 배포 → **Rollback**.
+- Worker: 그 폴더에서 `npx wrangler rollback`.
+- 주소 자체를 접으려면 Pages·Worker의 맞춤 도메인을 지운다. 스튜디오 사이트(`minkyulabs.com`)에는 영향이 없다.
+
+## 8. 실패 표
+
+| 증상 | 원인 | 할 일 |
+|---|---|---|
+| Custom domain 추가 시 "record already exists" | 같은 이름의 DNS 기록이 있음 | DNS → Records에서 그 이름을 지우고 다시 |
+| `warhop-api.../health`가 SSL 오류 | 인증서 발급 중 | 5~10분 기다림 |
+| 게임은 뜨는데 Console에 `CORS`·`403 origin` | Worker를 다시 배포 안 함(옛 ALLOWED_ORIGINS) | 4.3 다시 |
+| Console에 `Content Security Policy`·`connect-src` | 브랜치를 안 받고 main으로 빌드함 | 4.2 확인 뒤 4.4 다시 |
+| 구글 로그인 `redirect_uri_mismatch` | 콘솔에 주소가 글자 그대로 없음(끝의 `/`까지) | 4.6 |
+| `wrangler pages project create`가 "already exists" | 이미 만든 적 있음 | 그 단계는 건너뛰고 deploy만 |
+| `Authentication error` | wrangler 로그인 만료 | `npx wrangler login` |
