@@ -57,7 +57,7 @@ variable "monthly_budget_usd" {
 
 variable "repo_url" {
   type        = string
-  default     = "https://github.com/JungMK0720/skala-fps.git"
+  default     = "https://github.com/Warhop-fps/app.git"
   description = "서버가 인증 없이 읽을 수 있는 공개 HTTPS 저장소 URL"
   validation {
     condition     = can(regex("^https://[A-Za-z0-9._~:/-]+$", var.repo_url))
